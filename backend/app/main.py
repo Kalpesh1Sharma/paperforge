@@ -1,23 +1,21 @@
+import logging
+
 from fastapi import FastAPI
 
-app = FastAPI(
-    title="PaperForge API",
-    description="AI-powered research workspace backend.",
-    version="0.1.0",
+from app.api.health import router as health_router
+from app.api.upload import router as upload_router
+from app.config import settings
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.app_version,
+)
 
-@app.get("/")
-def root():
-    return {
-        "message": "Welcome to PaperForge API!"
-    }
-
-
-@app.get("/health")
-def health():
-    return {
-        "status": "healthy",
-        "service": "PaperForge",
-        "version": "0.1.0",
-    }
+app.include_router(health_router)
+app.include_router(upload_router)
