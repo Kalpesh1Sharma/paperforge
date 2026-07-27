@@ -1,22 +1,27 @@
 from pathlib import Path
 import sys
 
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
+from app.chunking import ChunkingConfig, DocumentChunker
 from app.parsers import ParserFactory
 
-# Change this path to whatever file you want to test
-file_path = Path("sample.pdf")
+doc = ParserFactory.parse(Path("sample.pdf"))
 
-document = ParserFactory.parse(file_path)
+chunks = DocumentChunker().chunk(
+    doc,
+    ChunkingConfig(
+        max_chars=1000,
+        overlap_chars=150,
+    ),
+)
 
-print("=" * 60)
-print("Filename:", document.filename)
-print("Type:", document.file_type)
-print("Pages:", document.page_count)
-print("Words:", document.word_count)
-print("Characters:", document.character_count)
-print("Metadata:", document.metadata)
-print("=" * 60)
+print(f"Chunks: {len(chunks)}")
 
-print(document.extracted_text[:1000])
+for chunk in chunks:
+    print("=" * 60)
+    print(chunk.chunk_index)
+    print(chunk.word_count)
+    print(chunk.start_char, chunk.end_char)
+    print(chunk.text[:200])
