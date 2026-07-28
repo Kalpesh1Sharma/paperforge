@@ -1,4 +1,4 @@
-"""Provider abstraction for future knowledge extraction integrations."""
+"""Base interface for knowledge providers."""
 
 from abc import ABC, abstractmethod
 
@@ -7,8 +7,9 @@ from app.models.document_chunk import DocumentChunk
 
 
 class BaseKnowledgeProvider(ABC):
-    """Produce knowledge objects from deterministic document chunks."""
+    """Abstract interface implemented by all knowledge providers."""
 
     @abstractmethod
     def extract(self, chunk: DocumentChunk) -> KnowledgeObject:
-        """Extract knowledge from one chunk without changing the chunk."""
+        """Extract structured knowledge from one document chunk."""
+        raise NotImplementedError
