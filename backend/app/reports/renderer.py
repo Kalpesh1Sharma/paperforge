@@ -1,7 +1,14 @@
 """Deterministic Markdown rendering for research reports."""
 
+import math
+import re
 from uuid import UUID
 
+from app.reports.enhanced_models import (
+    EnhancedResearchReport,
+    SynthesisMetadata,
+    SynthesizedSection,
+)
 from app.reports.exceptions import (
     InvalidResearchReportError,
     ReportRenderingError,
@@ -12,6 +19,8 @@ from app.reports.models import (
     ResearchReport,
     TimelineEvent,
 )
+
+_SUMMARY_PARAGRAPH_SEPARATOR = re.compile(r"\r?\n[ \t]*(?:\r?\n)+")
 
 
 class MarkdownRenderer:
@@ -27,6 +36,19 @@ class MarkdownRenderer:
             raise
         except Exception as exc:
             raise ReportRenderingError("Unable to render the research report.") from exc
+
+    def render_enhanced(self, enhanced_report: EnhancedResearchReport) -> str:
+        """Render an immutable AI enhancement over a deterministic base report."""
+        self._validate_enhanced_report(enhanced_report)
+
+        try:
+            return self._render_enhanced_report(enhanced_report)
+        except InvalidResearchReportError:
+            raise
+        except Exception as exc:
+            raise ReportRenderingError(
+                "Unable to render the enhanced research report."
+            ) from exc
 
     @classmethod
     def _render_report(cls, report: ResearchReport) -> str:
@@ -73,6 +95,27 @@ class MarkdownRenderer:
             for section in report.sections
         )
         return "\n\n".join(block.rstrip("\n") for block in blocks) + "\n"
+
+    @classmethod
+    def _render_enhanced_report(cls, enhanced_report: EnhancedResearchReport) -> str:
+        """Compose a render-only report from deterministic and enhanced fields."""
+        base_report = enhanced_report.base_report
+        enhanced_sections = tuple(
+            ReportSection(heading=section.heading, content=section.content)
+            for section in enhanced_report.sections
+        )
+        render_only_report = ResearchReport(
+            title=base_report.title,
+            executive_summary=enhanced_report.executive_summary,
+            findings=enhanced_report.findings,
+            important_entities=base_report.important_entities,
+            important_definitions=base_report.important_definitions,
+            important_metrics=base_report.important_metrics,
+            timeline=base_report.timeline,
+            references=base_report.references,
+            sections=enhanced_sections,
+        )
+        return cls._render_report(render_only_report)
 
     @staticmethod
     def _text_block(heading: str, content: str) -> str:
@@ -126,6 +169,145 @@ class MarkdownRenderer:
         if len(set(report.references)) != len(report.references):
             raise InvalidResearchReportError(
                 "ResearchReport references must not contain duplicates."
+            )
+
+    @classmethod
+    def _validate_enhanced_report(cls, enhanced_report: object) -> None:
+        """Reject malformed enhanced reports before Markdown composition."""
+        if not isinstance(enhanced_report, EnhancedResearchReport):
+            raise InvalidResearchReportError(
+                "Input must be an EnhancedResearchReport instance."
+            )
+        if getattr(enhanced_report, "__pydantic_extra__", None):
+            raise InvalidResearchReportError(
+                "EnhancedResearchReport must not contain extra fields."
+            )
+
+        try:
+            base_report = enhanced_report.base_report
+            executive_summary = enhanced_report.executive_summary
+            findings = enhanced_report.findings
+            sections = enhanced_report.sections
+            synthesis_metadata = enhanced_report.synthesis_metadata
+        except AttributeError as exc:
+            raise InvalidResearchReportError(
+                "EnhancedResearchReport is missing a required field."
+            ) from exc
+
+        try:
+            cls._validate_base_report(base_report)
+            cls._validate_enhanced_summary(executive_summary)
+            cls._validate_enhanced_findings(findings)
+            cls._validate_synthesized_sections(sections)
+            cls._validate_synthesis_metadata(synthesis_metadata)
+        except InvalidResearchReportError:
+            raise
+        except Exception as exc:
+            raise InvalidResearchReportError(
+                "EnhancedResearchReport is malformed."
+            ) from exc
+
+    @classmethod
+    def _validate_enhanced_summary(cls, summary: object) -> None:
+        """Require the two-to-four factual paragraphs promised by the overlay."""
+        cls._validate_string(summary, "EnhancedResearchReport executive_summary")
+        paragraphs = tuple(
+            paragraph.strip()
+            for paragraph in _SUMMARY_PARAGRAPH_SEPARATOR.split(summary.strip())
+            if paragraph.strip()
+        )
+        if not 2 <= len(paragraphs) <= 4:
+            raise InvalidResearchReportError(
+                "EnhancedResearchReport executive_summary must have 2 to 4 "
+                "non-empty paragraphs."
+            )
+
+    @classmethod
+    def _validate_base_report(cls, report: object) -> None:
+        """Apply report validation while mapping bypassed-model failures safely."""
+        if getattr(report, "__pydantic_extra__", None):
+            raise InvalidResearchReportError(
+                "ResearchReport must not contain extra fields."
+            )
+        try:
+            cls._validate_report(report)
+        except InvalidResearchReportError:
+            raise
+        except Exception as exc:
+            raise InvalidResearchReportError(
+                "EnhancedResearchReport base_report is malformed."
+            ) from exc
+
+    @classmethod
+    def _validate_enhanced_findings(cls, findings: object) -> None:
+        """Validate AI findings, including their required source provenance."""
+        cls._validate_findings(findings)
+        for finding in findings:
+            if getattr(finding, "__pydantic_extra__", None):
+                raise InvalidResearchReportError(
+                    "Finding must not contain extra fields."
+                )
+            if not finding.supporting_chunk_ids:
+                raise InvalidResearchReportError(
+                    "EnhancedResearchReport findings require source provenance."
+                )
+
+    @classmethod
+    def _validate_synthesized_sections(cls, sections: object) -> None:
+        """Validate provenance-bearing enhanced sections without copying them."""
+        if not isinstance(sections, tuple):
+            raise InvalidResearchReportError(
+                "EnhancedResearchReport sections must be a tuple."
+            )
+        for section in sections:
+            if not isinstance(section, SynthesizedSection):
+                raise InvalidResearchReportError(
+                    "EnhancedResearchReport sections must contain "
+                    "SynthesizedSection instances."
+                )
+            if getattr(section, "__pydantic_extra__", None):
+                raise InvalidResearchReportError(
+                    "SynthesizedSection must not contain extra fields."
+                )
+            cls._validate_string(section.heading, "SynthesizedSection heading")
+            cls._validate_string(section.content, "SynthesizedSection content")
+            cls._validate_chunk_ids(
+                section.supporting_chunk_ids,
+                "SynthesizedSection supporting_chunk_ids",
+            )
+            if not section.supporting_chunk_ids:
+                raise InvalidResearchReportError(
+                    "SynthesizedSection requires source provenance."
+                )
+
+    @classmethod
+    def _validate_synthesis_metadata(cls, metadata: object) -> None:
+        """Validate immutable operational metadata for enhanced reports."""
+        if not isinstance(metadata, SynthesisMetadata):
+            raise InvalidResearchReportError(
+                "EnhancedResearchReport synthesis_metadata must be a "
+                "SynthesisMetadata instance."
+            )
+        if getattr(metadata, "__pydantic_extra__", None):
+            raise InvalidResearchReportError(
+                "SynthesisMetadata must not contain extra fields."
+            )
+        cls._validate_string(metadata.provider, "SynthesisMetadata provider")
+        cls._validate_string(metadata.model, "SynthesisMetadata model")
+
+        elapsed_ms = metadata.elapsed_ms
+        if (
+            isinstance(elapsed_ms, bool)
+            or not isinstance(elapsed_ms, float)
+            or not math.isfinite(elapsed_ms)
+            or elapsed_ms < 0.0
+        ):
+            raise InvalidResearchReportError(
+                "SynthesisMetadata elapsed_ms must be a finite non-negative float."
+            )
+        if not isinstance(metadata.successful, bool):
+            raise InvalidResearchReportError(
+                "SynthesisMetadata successful must be a boolean."
             )
 
     @classmethod

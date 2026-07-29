@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from app.knowledge import KnowledgeObject
 from app.reports import (
+    EnhancedResearchReport,
     Finding,
     InvalidResearchReportError,
     MarkdownRenderer,
@@ -15,6 +16,8 @@ from app.reports import (
     ReportSynthesisError,
     ResearchReport,
     ResearchSynthesizer,
+    SynthesizedSection,
+    SynthesisMetadata,
     TimelineEvent,
 )
 
@@ -329,3 +332,64 @@ def test_renderer_wraps_unexpected_rendering_errors(
 
     with pytest.raises(ReportRenderingError):
         MarkdownRenderer().render(_report())
+
+
+def test_renderer_renders_enhanced_overlay_without_changing_base_rendering() -> None:
+    chunk_id = uuid4()
+    base_report = _report(
+        findings=(
+            Finding(
+                title="Finding 1",
+                description="Deterministic source fact.",
+                supporting_chunk_ids=(chunk_id,),
+            ),
+        ),
+        important_entities=("PaperForge",),
+        important_definitions=("Evidence means support.",),
+        important_metrics=("95%",),
+        references=("https://example.com",),
+    )
+    enhanced_report = EnhancedResearchReport(
+        base_report=base_report,
+        executive_summary=(
+            "Enhanced summary paragraph one.\n\n"
+            "Enhanced summary paragraph two."
+        ),
+        findings=(
+            Finding(
+                title="Grouped Finding",
+                description="Enhanced grounded finding.",
+                supporting_chunk_ids=(chunk_id,),
+            ),
+        ),
+        sections=(
+            SynthesizedSection(
+                heading="Professional Experience",
+                content="Enhanced grounded section.",
+                supporting_chunk_ids=(chunk_id,),
+            ),
+        ),
+        synthesis_metadata=SynthesisMetadata(
+            provider="groq",
+            model="test-model",
+            elapsed_ms=0.0,
+            successful=True,
+        ),
+    )
+    renderer = MarkdownRenderer()
+
+    deterministic_markdown = renderer.render(base_report)
+    enhanced_markdown = renderer.render_enhanced(enhanced_report)
+
+    assert "Summary." in deterministic_markdown
+    assert "Deterministic source fact." in deterministic_markdown
+    assert "Enhanced summary paragraph one." in enhanced_markdown
+    assert "Enhanced summary paragraph two." in enhanced_markdown
+    assert "Grouped Finding" in enhanced_markdown
+    assert "Deterministic source fact." not in enhanced_markdown
+    assert "PaperForge" in enhanced_markdown
+    assert "Evidence means support." in enhanced_markdown
+    assert "95%" in enhanced_markdown
+    assert "https://example.com" in enhanced_markdown
+    assert "## Professional Experience" in enhanced_markdown
+    assert "Enhanced grounded section." in enhanced_markdown
