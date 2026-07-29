@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     upload_dir: Path = Path(__file__).resolve().parent.parent / "uploads"
     max_upload_size_bytes: int = 50 * 1024 * 1024
+    groq_api_key: str | None = None
+    groq_model: str | None = None
 
 
 settings = Settings()
