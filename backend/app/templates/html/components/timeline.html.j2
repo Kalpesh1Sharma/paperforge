@@ -1,0 +1,21 @@
+    <section class="report-section" aria-labelledby="timeline-heading">
+      <h2 id="timeline-heading">Timeline</h2>
+{% if base_report.timeline %}
+      <ol class="timeline-list">
+{% for event in base_report.timeline %}
+        <li class="timeline-event">
+          <p class="timeline-date">{{ event.date }}</p>
+          <p>{{ event.description }}</p>
+          <p class="provenance">
+            <span class="provenance-label">Supported by</span>
+{% for chunk_id in event.supporting_chunk_ids %}
+            <code>{{ chunk_id }}</code>{% if not loop.last %}, {% endif %}
+{% endfor %}
+          </p>
+        </li>
+{% endfor %}
+      </ol>
+{% else %}
+      <p class="empty-state">{{ empty_state }}</p>
+{% endif %}
+    </section>

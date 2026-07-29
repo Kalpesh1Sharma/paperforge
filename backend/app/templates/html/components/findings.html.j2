@@ -1,0 +1,21 @@
+    <section class="report-section" aria-labelledby="key-findings-heading">
+      <h2 id="key-findings-heading">Key Findings</h2>
+{% if report.findings %}
+      <ol class="findings-list">
+{% for finding in report.findings %}
+        <li class="finding">
+          <h3>{{ finding.title }}</h3>
+          <p>{{ finding.description }}</p>
+          <p class="provenance">
+            <span class="provenance-label">Supported by</span>
+{% for chunk_id in finding.supporting_chunk_ids %}
+            <code>{{ chunk_id }}</code>{% if not loop.last %}, {% endif %}
+{% endfor %}
+          </p>
+        </li>
+{% endfor %}
+      </ol>
+{% else %}
+      <p class="empty-state">{{ empty_state }}</p>
+{% endif %}
+    </section>

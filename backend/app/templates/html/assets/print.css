@@ -1,0 +1,74 @@
+@page {
+  margin: 0.7in;
+}
+
+html,
+body {
+  color: #000000;
+  background: #ffffff;
+  font-size: 10.5pt;
+}
+
+.skip-link,
+.report-footer {
+  display: none;
+}
+
+.report {
+  width: auto;
+  margin: 0;
+  overflow: visible;
+  background: #ffffff;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.report-header {
+  padding: 0 0 1.4rem;
+  color: #000000;
+  background: #ffffff;
+  border-bottom: 1.5pt solid #000000;
+}
+
+.eyebrow,
+h1 {
+  color: #000000;
+}
+
+.report-section {
+  padding: 1.1rem 0;
+  border-top-color: #9ca3af;
+}
+
+.report-section,
+.finding,
+.timeline-event,
+.generation-metadata > div {
+  break-inside: avoid;
+}
+
+.finding,
+.timeline-event,
+.empty-state,
+.generated-by {
+  background: #ffffff;
+}
+
+.finding,
+.timeline-event,
+.empty-state {
+  border-left-color: #000000;
+}
+
+.tag-list li,
+code {
+  color: #000000;
+  background: #ffffff;
+  border: 0.5pt solid #6b7280;
+}
+
+a {
+  color: #000000;
+  text-decoration: underline;
+}

@@ -1,0 +1,12 @@
+    <section class="report-section" aria-labelledby="references-heading">
+      <h2 id="references-heading">References</h2>
+{% if base_report.references %}
+      <ol class="reference-list">
+{% for reference in base_report.references %}
+        <li>{{ reference }}</li>
+{% endfor %}
+      </ol>
+{% else %}
+      <p class="empty-state">{{ empty_state }}</p>
+{% endif %}
+    </section>
