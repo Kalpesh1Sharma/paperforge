@@ -13,6 +13,7 @@ from app.reports import (
     ReportRenderingError,
     ResearchReport,
     SynthesisMetadata,
+    SynthesisSourceEvidence,
     SynthesizedSection,
     TimelineEvent,
 )
@@ -210,8 +211,8 @@ def test_html_renderer_renders_empty_collections_with_accessible_empty_states() 
     assert "Professional Experience" not in html
 
 
-def test_html_renderer_rejects_validation_bypassed_enhanced_reports() -> None:
-    """Malformed externally constructed models map to report validation errors."""
+def test_html_renderer_accepts_any_nonblank_summary_and_rejects_corruption() -> None:
+    """Presentation accepts fallback prose while still rejecting malformed models."""
     malformed = EnhancedResearchReport.model_construct(
         base_report=_base_report(),
         executive_summary="Only one paragraph.",
@@ -225,8 +226,7 @@ def test_html_renderer_rejects_validation_bypassed_enhanced_reports() -> None:
         ),
     )
 
-    with pytest.raises(InvalidResearchReportError, match="2 to 4"):
-        HTMLRenderer().render(malformed)
+    assert "Only one paragraph." in HTMLRenderer().render(malformed)
     with pytest.raises(InvalidResearchReportError, match="EnhancedResearchReport"):
         HTMLRenderer().render(object())  # type: ignore[arg-type]
 
@@ -258,6 +258,38 @@ def test_html_renderer_rejects_validation_bypassed_enhanced_reports() -> None:
 
     with pytest.raises(InvalidResearchReportError, match="structural"):
         HTMLRenderer().render(nested_malformed)
+
+
+def test_html_renderer_renders_a_nullable_model_generically() -> None:
+    """A fallback overlay displays no model without provider-specific logic."""
+    fallback = EnhancedResearchReport(
+        base_report=_base_report(include_content=False),
+        executive_summary="Deterministic fallback summary.",
+        findings=(),
+        sections=(),
+        synthesis_metadata=SynthesisMetadata(
+            provider="fallback",
+            model=None,
+            elapsed_ms=0.0,
+            successful=True,
+            enhanced=False,
+            fallback=True,
+            reason="timeout",
+            source_evidence=(
+                SynthesisSourceEvidence(
+                    chunk_id=_CHUNK_ID,
+                    confidence=1.0,
+                    references=(),
+                ),
+            ),
+        ),
+    )
+
+    html = HTMLRenderer().render(fallback)
+
+    assert "fallback" in html
+    assert "Not applicable" in html
+    assert "Deterministic fallback summary." in html
 
 
 def test_html_renderer_maps_unexpected_template_errors(

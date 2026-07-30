@@ -71,13 +71,9 @@ class HTMLRenderer:
                 "EnhancedResearchReport could not be validated safely."
             ) from exc
 
-        summary_paragraphs = cls._summary_paragraphs(
-            validated_report.executive_summary
-        )
-        if not 2 <= len(summary_paragraphs) <= 4:
+        if not cls._summary_paragraphs(validated_report.executive_summary):
             raise InvalidResearchReportError(
-                "EnhancedResearchReport executive_summary must have 2 to 4 "
-                "non-empty paragraphs."
+                "EnhancedResearchReport executive_summary must not be blank."
             )
 
     @staticmethod

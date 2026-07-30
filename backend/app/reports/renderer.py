@@ -1,12 +1,12 @@
 """Deterministic Markdown rendering for research reports."""
 
 import math
-import re
 from uuid import UUID
 
 from app.reports.enhanced_models import (
     EnhancedResearchReport,
     SynthesisMetadata,
+    SynthesisSourceEvidence,
     SynthesizedSection,
 )
 from app.reports.exceptions import (
@@ -19,8 +19,6 @@ from app.reports.models import (
     ResearchReport,
     TimelineEvent,
 )
-
-_SUMMARY_PARAGRAPH_SEPARATOR = re.compile(r"\r?\n[ \t]*(?:\r?\n)+")
 
 
 class MarkdownRenderer:
@@ -209,17 +207,11 @@ class MarkdownRenderer:
 
     @classmethod
     def _validate_enhanced_summary(cls, summary: object) -> None:
-        """Require the two-to-four factual paragraphs promised by the overlay."""
+        """Require non-empty enhanced summary text without provider policy."""
         cls._validate_string(summary, "EnhancedResearchReport executive_summary")
-        paragraphs = tuple(
-            paragraph.strip()
-            for paragraph in _SUMMARY_PARAGRAPH_SEPARATOR.split(summary.strip())
-            if paragraph.strip()
-        )
-        if not 2 <= len(paragraphs) <= 4:
+        if not summary.strip():
             raise InvalidResearchReportError(
-                "EnhancedResearchReport executive_summary must have 2 to 4 "
-                "non-empty paragraphs."
+                "EnhancedResearchReport executive_summary must not be blank."
             )
 
     @classmethod
@@ -292,8 +284,18 @@ class MarkdownRenderer:
             raise InvalidResearchReportError(
                 "SynthesisMetadata must not contain extra fields."
             )
+        try:
+            payload = metadata.model_dump(mode="python", warnings="error")
+            SynthesisMetadata.model_validate(payload)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise InvalidResearchReportError(
+                "SynthesisMetadata failed structural validation."
+            ) from exc
+
         cls._validate_string(metadata.provider, "SynthesisMetadata provider")
-        cls._validate_string(metadata.model, "SynthesisMetadata model")
+        if metadata.model is not None:
+            cls._validate_string(metadata.model, "SynthesisMetadata model")
+        cls._validate_optional_string(metadata.reason, "SynthesisMetadata reason")
 
         elapsed_ms = metadata.elapsed_ms
         if (
@@ -305,9 +307,48 @@ class MarkdownRenderer:
             raise InvalidResearchReportError(
                 "SynthesisMetadata elapsed_ms must be a finite non-negative float."
             )
-        if not isinstance(metadata.successful, bool):
+        for field_name in ("successful", "fallback", "enhanced"):
+            if not isinstance(getattr(metadata, field_name), bool):
+                raise InvalidResearchReportError(
+                    f"SynthesisMetadata {field_name} must be a boolean."
+                )
+        cls._validate_source_evidence(metadata.source_evidence)
+
+    @classmethod
+    def _validate_source_evidence(cls, values: object) -> None:
+        """Validate immutable source evidence without interpreting its provider."""
+        if not isinstance(values, tuple):
             raise InvalidResearchReportError(
-                "SynthesisMetadata successful must be a boolean."
+                "SynthesisMetadata source_evidence must be a tuple."
+            )
+
+        for evidence in values:
+            if not isinstance(evidence, SynthesisSourceEvidence):
+                raise InvalidResearchReportError(
+                    "SynthesisMetadata source_evidence must contain "
+                    "SynthesisSourceEvidence instances."
+                )
+            if getattr(evidence, "__pydantic_extra__", None):
+                raise InvalidResearchReportError(
+                    "SynthesisSourceEvidence must not contain extra fields."
+                )
+            if not isinstance(evidence.chunk_id, UUID):
+                raise InvalidResearchReportError(
+                    "SynthesisSourceEvidence chunk_id must be a UUID."
+                )
+            if (
+                isinstance(evidence.confidence, bool)
+                or not isinstance(evidence.confidence, float)
+                or not math.isfinite(evidence.confidence)
+                or not 0.0 <= evidence.confidence <= 1.0
+            ):
+                raise InvalidResearchReportError(
+                    "SynthesisSourceEvidence confidence must be a finite float "
+                    "from 0 to 1."
+                )
+            cls._validate_string_collection(
+                evidence.references,
+                "SynthesisSourceEvidence references",
             )
 
     @classmethod
@@ -388,3 +429,9 @@ class MarkdownRenderer:
         """Validate text without coercion or content normalization."""
         if not isinstance(value, str):
             raise InvalidResearchReportError(f"{field_name} must be text.")
+
+    @staticmethod
+    def _validate_optional_string(value: object, field_name: str) -> None:
+        """Validate optional text without adding provider-specific semantics."""
+        if value is not None and not isinstance(value, str):
+            raise InvalidResearchReportError(f"{field_name} must be text or null.")

@@ -10,6 +10,7 @@ from uuid import UUID
 from groq import (
     APIConnectionError,
     APIError,
+    APIStatusError,
     APITimeoutError,
     AuthenticationError,
     Groq,
@@ -28,6 +29,7 @@ from app.knowledge.models import KnowledgeObject
 from app.reports.enhanced_models import (
     EnhancedResearchReport,
     SynthesisMetadata,
+    SynthesisSourceEvidence,
     SynthesizedSection,
 )
 from app.reports.exceptions import ReportSynthesisError
@@ -45,6 +47,15 @@ _KNOWLEDGE_COLLECTION_FIELDS = (
     "references",
 )
 _PARAGRAPH_SEPARATOR = re.compile(r"\r?\n[ \t]*(?:\r?\n)+")
+
+
+class _RecoverableSynthesisResponseError(ReportSynthesisError):
+    """A provider response failure that may use deterministic fallback output."""
+
+    def __init__(self, message: str, reason: str) -> None:
+        """Store a normalized, safe reason for the fallback telemetry."""
+        super().__init__(message)
+        self.reason = reason
 
 
 class _SynthesisFindingResponse(BaseModel):
@@ -119,16 +130,22 @@ class DocumentSynthesizer:
         report: ResearchReport,
         knowledge_objects: tuple[KnowledgeObject, ...],
     ) -> EnhancedResearchReport:
-        """Return an immutable AI overlay without modifying the base report."""
+        """Return an AI overlay or deterministic fallback for valid inputs.
+
+        Caller-provided models are validated before constructing a provider client.
+        Only transient provider failures and unusable model responses fall back; all
+        configuration, authorization, input, and programming failures surface.
+        """
         started_at = perf_counter()
         model = self._configured_model_name()
         object_count = self._safe_knowledge_object_count(knowledge_objects)
 
+        self._validate_report(report)
+        self._validate_knowledge_objects(knowledge_objects)
+        api_key, model = self._configuration()
+        payload = self._request_payload(report, knowledge_objects)
+
         try:
-            self._validate_report(report)
-            self._validate_knowledge_objects(knowledge_objects)
-            api_key, model = self._configuration()
-            payload = self._request_payload(report, knowledge_objects)
             client = Groq(api_key=api_key, max_retries=0)
             completion = client.chat.completions.create(
                 model=model,
@@ -154,35 +171,71 @@ class DocumentSynthesizer:
                 model,
                 started_at,
             )
-        except APITimeoutError as exc:
-            self._log_failure(model, object_count, started_at)
-            raise ReportSynthesisError("Groq document synthesis timed out.") from exc
+        except _RecoverableSynthesisResponseError as exc:
+            return self._fallback_report(
+                report,
+                knowledge_objects,
+                started_at,
+                reason=exc.reason,
+                message=str(exc),
+            )
+        except RateLimitError:
+            return self._fallback_report(
+                report,
+                knowledge_objects,
+                started_at,
+                reason="rate_limit",
+                message="Groq document synthesis was rate limited.",
+            )
+        except APITimeoutError:
+            return self._fallback_report(
+                report,
+                knowledge_objects,
+                started_at,
+                reason="timeout",
+                message="Groq document synthesis timed out.",
+            )
         except AuthenticationError as exc:
             self._log_failure(model, object_count, started_at)
             raise ReportSynthesisError(
                 "Groq document synthesis authentication failed."
             ) from exc
-        except RateLimitError as exc:
+        except APIConnectionError:
+            return self._fallback_report(
+                report,
+                knowledge_objects,
+                started_at,
+                reason="connection",
+                message="Groq document synthesis service was unreachable.",
+            )
+        except APIStatusError as exc:
+            if self._is_server_error(exc):
+                return self._fallback_report(
+                    report,
+                    knowledge_objects,
+                    started_at,
+                    reason="api_status",
+                    message="Groq document synthesis service returned a server error.",
+                )
+
             self._log_failure(model, object_count, started_at)
+            status_code = getattr(exc, "status_code", None)
+            if status_code == 401:
+                raise ReportSynthesisError(
+                    "Groq document synthesis authentication failed."
+                ) from exc
+            if status_code == 403:
+                raise ReportSynthesisError(
+                    "Groq document synthesis permission was denied."
+                ) from exc
             raise ReportSynthesisError(
-                "Groq document synthesis was rate limited."
-            ) from exc
-        except APIConnectionError as exc:
-            self._log_failure(model, object_count, started_at)
-            raise ReportSynthesisError(
-                "Groq document synthesis service was unreachable."
+                "Groq document synthesis request was rejected."
             ) from exc
         except APIError as exc:
             self._log_failure(model, object_count, started_at)
             raise ReportSynthesisError(
                 "Groq document synthesis request failed."
             ) from exc
-        except ReportSynthesisError:
-            self._log_failure(model, object_count, started_at)
-            raise
-        except Exception as exc:
-            self._log_failure(model, object_count, started_at)
-            raise ReportSynthesisError("Document synthesis failed.") from exc
 
         self._log_success(model, object_count, started_at)
         return enhanced_report
@@ -214,6 +267,16 @@ class DocumentSynthesizer:
         if isinstance(knowledge_objects, tuple):
             return len(knowledge_objects)
         return 0
+
+    @staticmethod
+    def _is_server_error(error: APIStatusError) -> bool:
+        """Return whether an SDK status error represents a recoverable 5xx."""
+        status_code = getattr(error, "status_code", None)
+        return (
+            not isinstance(status_code, bool)
+            and isinstance(status_code, int)
+            and 500 <= status_code <= 599
+        )
 
     @classmethod
     def _validate_report(cls, report: object) -> None:
@@ -326,13 +389,17 @@ class DocumentSynthesizer:
         """Extract non-empty JSON content from a synchronous SDK completion."""
         choices = getattr(completion, "choices", None)
         if not isinstance(choices, (list, tuple)) or not choices:
-            raise ReportSynthesisError("Groq response contained no choices.")
+            raise _RecoverableSynthesisResponseError(
+                "Groq response contained no choices.",
+                "malformed_response",
+            )
 
         message = getattr(choices[0], "message", None)
         content = getattr(message, "content", None)
         if not isinstance(content, str) or not content.strip():
-            raise ReportSynthesisError(
-                "Groq response contained no usable message content."
+            raise _RecoverableSynthesisResponseError(
+                "Groq response contained no usable message content.",
+                "malformed_response",
             )
         return content
 
@@ -341,8 +408,11 @@ class DocumentSynthesizer:
         """Parse the JSON-only response through the strict private schema."""
         try:
             json.loads(content)
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise ReportSynthesisError("Groq response was not valid JSON.") from exc
+        except json.JSONDecodeError as exc:
+            raise _RecoverableSynthesisResponseError(
+                "Groq response was not valid JSON.",
+                "malformed_response",
+            ) from exc
 
         try:
             return _DocumentSynthesisResponse.model_validate_json(content)
@@ -351,18 +421,21 @@ class DocumentSynthesizer:
                 error.get("loc", ()) for error in exc.errors()
             )
             if any("executive_summary" in location for location in error_locations):
-                raise ReportSynthesisError(
-                    "Groq response failed executive summary paragraph requirements."
+                raise _RecoverableSynthesisResponseError(
+                    "Groq response failed executive summary paragraph requirements.",
+                    "validation_failure",
                 ) from exc
             if any(
                 "supporting_chunk_ids" in location
                 for location in error_locations
             ):
-                raise ReportSynthesisError(
-                    "Groq response failed source provenance requirements."
+                raise _RecoverableSynthesisResponseError(
+                    "Groq response failed source provenance requirements.",
+                    "validation_failure",
                 ) from exc
-            raise ReportSynthesisError(
-                "Groq response did not match the document synthesis schema."
+            raise _RecoverableSynthesisResponseError(
+                "Groq response did not match the document synthesis schema.",
+                "validation_failure",
             ) from exc
 
     @staticmethod
@@ -378,13 +451,15 @@ class DocumentSynthesizer:
         for item in (*response.findings, *response.sections):
             supporting_chunk_ids = item.supporting_chunk_ids
             if not supporting_chunk_ids:
-                raise ReportSynthesisError(
-                    "Synthesized content must include source chunk provenance."
+                raise _RecoverableSynthesisResponseError(
+                    "Synthesized content must include source chunk provenance.",
+                    "validation_failure",
                 )
             if not set(supporting_chunk_ids).issubset(source_chunk_ids):
-                raise ReportSynthesisError(
+                raise _RecoverableSynthesisResponseError(
                     "Synthesized content provenance referenced an unknown source "
-                    "chunk."
+                    "chunk.",
+                    "validation_failure",
                 )
 
     @staticmethod
@@ -422,9 +497,10 @@ class DocumentSynthesizer:
                     successful=True,
                 ),
             )
-        except (TypeError, ValidationError, ValueError) as exc:
-            raise ReportSynthesisError(
-                "Unable to construct an enhanced research report."
+        except ValidationError as exc:
+            raise _RecoverableSynthesisResponseError(
+                "Unable to construct an enhanced research report.",
+                "validation_failure",
             ) from exc
 
         if enhanced_report.base_report is not report:
@@ -432,6 +508,68 @@ class DocumentSynthesizer:
                 "EnhancedResearchReport must retain the original base report instance."
             )
         return enhanced_report
+
+    @staticmethod
+    def _fallback_report(
+        report: ResearchReport,
+        knowledge_objects: tuple[KnowledgeObject, ...],
+        started_at: float,
+        *,
+        reason: str,
+        message: str,
+    ) -> EnhancedResearchReport:
+        """Build and log one deterministic fallback for a recoverable failure."""
+        fallback_report = DocumentSynthesizer._build_fallback_report(
+            report,
+            knowledge_objects,
+            started_at,
+            reason,
+        )
+        DocumentSynthesizer._log_fallback(reason, message, started_at)
+        return fallback_report
+
+    @staticmethod
+    def _build_fallback_report(
+        report: ResearchReport,
+        knowledge_objects: tuple[KnowledgeObject, ...],
+        started_at: float,
+        reason: str,
+    ) -> EnhancedResearchReport:
+        """Create deterministic, source-preserving output without an AI request."""
+        try:
+            fallback_report = EnhancedResearchReport(
+                base_report=report,
+                executive_summary=report.executive_summary,
+                findings=report.findings,
+                sections=(),
+                synthesis_metadata=SynthesisMetadata(
+                    provider="fallback",
+                    model=None,
+                    elapsed_ms=(perf_counter() - started_at) * 1000,
+                    successful=True,
+                    enhanced=False,
+                    fallback=True,
+                    reason=reason,
+                    source_evidence=tuple(
+                        SynthesisSourceEvidence(
+                            chunk_id=knowledge_object.chunk_id,
+                            confidence=knowledge_object.confidence,
+                            references=knowledge_object.references,
+                        )
+                        for knowledge_object in knowledge_objects
+                    ),
+                ),
+            )
+        except ValidationError as exc:
+            raise ReportSynthesisError(
+                "Unable to construct a deterministic fallback report."
+            ) from exc
+
+        if fallback_report.base_report is not report:
+            raise ReportSynthesisError(
+                "EnhancedResearchReport must retain the original base report instance."
+            )
+        return fallback_report
 
     @staticmethod
     def _log_success(model: str, object_count: int, started_at: float) -> None:
@@ -452,5 +590,16 @@ class DocumentSynthesizer:
             "elapsed_ms=%.2f | outcome=failure",
             model,
             object_count,
+            (perf_counter() - started_at) * 1000,
+        )
+
+    @staticmethod
+    def _log_fallback(reason: str, message: str, started_at: float) -> None:
+        """Log one safe, structured warning for a deterministic fallback."""
+        logger.warning(
+            "Document synthesis fallback | provider=groq | fallback=true | "
+            "reason=%s | message=%s | elapsed_ms=%.2f",
+            reason,
+            message,
             (perf_counter() - started_at) * 1000,
         )

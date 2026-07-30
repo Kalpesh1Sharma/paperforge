@@ -16,6 +16,7 @@ from app.reports import (
     ReportSynthesisError,
     ResearchReport,
     ResearchSynthesizer,
+    SynthesisSourceEvidence,
     SynthesizedSection,
     SynthesisMetadata,
     TimelineEvent,
@@ -393,3 +394,44 @@ def test_renderer_renders_enhanced_overlay_without_changing_base_rendering() -> 
     assert "https://example.com" in enhanced_markdown
     assert "## Professional Experience" in enhanced_markdown
     assert "Enhanced grounded section." in enhanced_markdown
+
+
+def test_enhanced_renderer_accepts_a_nonblank_fallback_summary() -> None:
+    """Markdown presentation is provider-agnostic for valid overlays."""
+    chunk_id = uuid4()
+    base_report = _report(
+        findings=(
+            Finding(
+                title="Finding 1",
+                description="Deterministic source fact.",
+                supporting_chunk_ids=(chunk_id,),
+            ),
+        ),
+    )
+    fallback = EnhancedResearchReport(
+        base_report=base_report,
+        executive_summary="Deterministic fallback summary.",
+        findings=base_report.findings,
+        sections=(),
+        synthesis_metadata=SynthesisMetadata(
+            provider="fallback",
+            model=None,
+            elapsed_ms=0.0,
+            successful=True,
+            enhanced=False,
+            fallback=True,
+            reason="connection",
+            source_evidence=(
+                SynthesisSourceEvidence(
+                    chunk_id=chunk_id,
+                    confidence=1.0,
+                    references=(),
+                ),
+            ),
+        ),
+    )
+
+    markdown = MarkdownRenderer().render_enhanced(fallback)
+
+    assert "Deterministic fallback summary." in markdown
+    assert "Deterministic source fact." in markdown

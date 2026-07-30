@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+import logging
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -12,10 +13,13 @@ from app.knowledge import KnowledgeObject
 from app.reports import (
     EnhancedResearchReport,
     Finding,
+    HTMLRenderer,
+    MarkdownRenderer,
     ReportSynthesisError,
     ResearchReport,
     SynthesizedSection,
     SynthesisMetadata,
+    SynthesisSourceEvidence,
 )
 from app.reports import document_synthesizer
 
@@ -24,6 +28,8 @@ def _knowledge(
     chunk_id: UUID,
     *,
     facts: tuple[str, ...] = ("The service reduced latency.",),
+    references: tuple[str, ...] = ("https://example.com",),
+    confidence: float = 1.0,
 ) -> KnowledgeObject:
     return KnowledgeObject(
         chunk_id=chunk_id,
@@ -32,8 +38,8 @@ def _knowledge(
         definitions=("Evidence means supporting information.",),
         metrics=("30%",),
         dates=("2026-07-29",),
-        references=("https://example.com",),
-        confidence=1.0,
+        references=references,
+        confidence=confidence,
     )
 
 
@@ -152,6 +158,26 @@ def _completion(content: str) -> SimpleNamespace:
     )
 
 
+def _assert_fallback(
+    enhanced: EnhancedResearchReport,
+    report: ResearchReport,
+    *,
+    reason: str,
+) -> None:
+    """Assert the invariant deterministic overlay returned after a safe failure."""
+    assert enhanced.base_report is report
+    assert enhanced.executive_summary == report.executive_summary
+    assert enhanced.findings == report.findings
+    assert enhanced.sections == ()
+    assert enhanced.synthesis_metadata.provider == "fallback"
+    assert enhanced.synthesis_metadata.model is None
+    assert enhanced.synthesis_metadata.successful is True
+    assert enhanced.synthesis_metadata.enhanced is False
+    assert enhanced.synthesis_metadata.fallback is True
+    assert enhanced.synthesis_metadata.reason == reason
+    assert enhanced.synthesis_metadata.elapsed_ms >= 0.0
+
+
 def test_successful_synthesis_preserves_base_report_and_source_objects(
     monkeypatch: pytest.MonkeyPatch,
     configured_groq: None,
@@ -179,6 +205,10 @@ def test_successful_synthesis_preserves_base_report_and_source_objects(
     assert enhanced.synthesis_metadata.model == "test-model"
     assert enhanced.synthesis_metadata.elapsed_ms >= 0.0
     assert enhanced.synthesis_metadata.successful is True
+    assert enhanced.synthesis_metadata.enhanced is True
+    assert enhanced.synthesis_metadata.fallback is False
+    assert enhanced.synthesis_metadata.reason is None
+    assert enhanced.synthesis_metadata.source_evidence == ()
     assert constructor_calls == [{"api_key": "test-api-key", "max_retries": 0}]
     assert len(completions.calls) == 1
     request = completions.calls[0]
@@ -197,6 +227,11 @@ def test_successful_synthesis_preserves_base_report_and_source_objects(
 
 def test_enhanced_models_reject_blank_content_and_empty_provenance() -> None:
     chunk_id = uuid4()
+    evidence = SynthesisSourceEvidence(
+        chunk_id=chunk_id,
+        confidence=1.0,
+        references=("Reference A",),
+    )
 
     with pytest.raises(ValidationError):
         SynthesizedSection(
@@ -216,6 +251,58 @@ def test_enhanced_models_reject_blank_content_and_empty_provenance() -> None:
             model="test-model",
             elapsed_ms=0.0,
             successful=True,
+        )
+    with pytest.raises(ValidationError):
+        SynthesisSourceEvidence(
+            chunk_id=chunk_id,
+            confidence=1.1,
+            references=(),
+        )
+    with pytest.raises(ValidationError):
+        SynthesisSourceEvidence(
+            chunk_id=chunk_id,
+            confidence=1.0,
+            references=(),
+            unexpected=True,
+        )
+    with pytest.raises(ValidationError):
+        evidence.confidence = 0.5
+    fallback_metadata = SynthesisMetadata(
+        provider="fallback",
+        model=None,
+        elapsed_ms=0.0,
+        successful=True,
+        enhanced=False,
+        fallback=True,
+        reason="timeout",
+        source_evidence=(evidence,),
+    )
+    with pytest.raises(ValidationError):
+        fallback_metadata.reason = "connection"
+    with pytest.raises(ValidationError):
+        SynthesisMetadata(
+            provider="groq",
+            model="test-model",
+            elapsed_ms=0.0,
+            successful=True,
+            unexpected=True,
+        )
+    with pytest.raises(ValidationError):
+        SynthesisMetadata(
+            provider="fallback",
+            model=None,
+            elapsed_ms=0.0,
+            successful=True,
+            enhanced=False,
+            fallback=True,
+            reason="invalid reason",
+            source_evidence=(
+                SynthesisSourceEvidence(
+                    chunk_id=chunk_id,
+                    confidence=1.0,
+                    references=(),
+                ),
+            ),
         )
 
 
@@ -246,24 +333,44 @@ def test_synthesis_is_stable_for_identical_mocked_content(
     assert len(completions.calls) == 2
 
 
-def test_malformed_json_and_schema_are_rejected_without_partial_output(
+@pytest.mark.parametrize(
+    ("content", "reason"),
+    [
+        ("not-json", "malformed_response"),
+        (
+            json.dumps({"executive_summary": "Only one paragraph."}),
+            "validation_failure",
+        ),
+        (_response_content(uuid4(), unexpected="value"), "validation_failure"),
+    ],
+)
+def test_malformed_json_and_schema_use_a_deterministic_fallback(
     monkeypatch: pytest.MonkeyPatch,
     configured_groq: None,
+    content: str,
+    reason: str,
 ) -> None:
     chunk_id = uuid4()
     report = _report(chunk_id)
     knowledge = _knowledge(chunk_id)
 
-    for content in (
-        "not-json",
-        json.dumps({"executive_summary": "Only one paragraph."}),
-        _response_content(chunk_id, unexpected="value"),
-    ):
-        completions = FakeCompletions(response=_completion(content))
-        _install_client(monkeypatch, completions)
+    completions = FakeCompletions(response=_completion(content))
+    _install_client(monkeypatch, completions)
 
-        with pytest.raises(ReportSynthesisError):
-            document_synthesizer.DocumentSynthesizer().synthesize(report, (knowledge,))
+    enhanced = document_synthesizer.DocumentSynthesizer().synthesize(
+        report,
+        (knowledge,),
+    )
+
+    _assert_fallback(enhanced, report, reason=reason)
+    assert enhanced.synthesis_metadata.source_evidence == (
+        SynthesisSourceEvidence(
+            chunk_id=knowledge.chunk_id,
+            confidence=knowledge.confidence,
+            references=knowledge.references,
+        ),
+    )
+    assert len(completions.calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -289,7 +396,7 @@ def test_malformed_json_and_schema_are_rejected_without_partial_output(
         },
     ],
 )
-def test_invalid_provenance_rejects_the_whole_response(
+def test_invalid_provenance_uses_a_fallback_without_partial_ai_content(
     monkeypatch: pytest.MonkeyPatch,
     configured_groq: None,
     response_overrides: dict[str, object],
@@ -300,11 +407,13 @@ def test_invalid_provenance_rejects_the_whole_response(
     )
     _install_client(monkeypatch, completions)
 
-    with pytest.raises(ReportSynthesisError, match="provenance"):
-        document_synthesizer.DocumentSynthesizer().synthesize(
-            _report(chunk_id),
-            (_knowledge(chunk_id),),
-        )
+    report = _report(chunk_id)
+    enhanced = document_synthesizer.DocumentSynthesizer().synthesize(
+        report,
+        (_knowledge(chunk_id),),
+    )
+
+    _assert_fallback(enhanced, report, reason="validation_failure")
 
 
 @pytest.mark.parametrize(
@@ -314,7 +423,7 @@ def test_invalid_provenance_rejects_the_whole_response(
         "\n\n".join(f"Paragraph {index}." for index in range(5)),
     ],
 )
-def test_summary_must_contain_two_to_four_paragraphs(
+def test_invalid_ai_summary_uses_a_fallback_but_does_not_change_rendering_rules(
     monkeypatch: pytest.MonkeyPatch,
     configured_groq: None,
     summary: str,
@@ -325,11 +434,17 @@ def test_summary_must_contain_two_to_four_paragraphs(
     )
     _install_client(monkeypatch, completions)
 
-    with pytest.raises(ReportSynthesisError, match="paragraph"):
-        document_synthesizer.DocumentSynthesizer().synthesize(
-            _report(chunk_id),
-            (_knowledge(chunk_id),),
-        )
+    report = _report(chunk_id)
+    enhanced = document_synthesizer.DocumentSynthesizer().synthesize(
+        report,
+        (_knowledge(chunk_id),),
+    )
+
+    _assert_fallback(enhanced, report, reason="validation_failure")
+    assert MarkdownRenderer().render_enhanced(enhanced).count(
+        report.executive_summary
+    ) == 1
+    assert report.executive_summary in HTMLRenderer().render(enhanced)
 
 
 def test_malformed_inputs_prevent_a_groq_request(
@@ -383,23 +498,101 @@ def test_missing_configuration_prevents_a_groq_request(
     assert constructor_calls == []
 
 
-@pytest.mark.parametrize(
-    "completion_or_error",
-    [
-        SimpleNamespace(choices=[]),
-        RuntimeError("transport failure"),
-    ],
-)
-def test_malformed_completion_and_sdk_failure_raise_report_error(
+def test_malformed_completion_uses_a_fallback(
     monkeypatch: pytest.MonkeyPatch,
     configured_groq: None,
-    completion_or_error: object,
 ) -> None:
     chunk_id = uuid4()
-    if isinstance(completion_or_error, Exception):
-        completions = FakeCompletions(error=completion_or_error)
-    else:
-        completions = FakeCompletions(response=completion_or_error)
+    report = _report(chunk_id)
+    completions = FakeCompletions(response=SimpleNamespace(choices=[]))
+    _install_client(monkeypatch, completions)
+
+    enhanced = document_synthesizer.DocumentSynthesizer().synthesize(
+        report,
+        (_knowledge(chunk_id),),
+    )
+
+    _assert_fallback(enhanced, report, reason="malformed_response")
+    assert len(completions.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("exception_name", "reason"),
+    [
+        ("RateLimitError", "rate_limit"),
+        ("APITimeoutError", "timeout"),
+        ("APIConnectionError", "connection"),
+    ],
+)
+def test_transient_provider_failures_use_a_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_groq: None,
+    exception_name: str,
+    reason: str,
+) -> None:
+    class TransientFailure(Exception):
+        """A local SDK failure type used to exercise the explicit boundary."""
+
+    chunk_id = uuid4()
+    report = _report(chunk_id)
+    monkeypatch.setattr(document_synthesizer, exception_name, TransientFailure)
+    completions = FakeCompletions(error=TransientFailure("temporary failure"))
+    _install_client(monkeypatch, completions)
+
+    enhanced = document_synthesizer.DocumentSynthesizer().synthesize(
+        report,
+        (_knowledge(chunk_id),),
+    )
+
+    _assert_fallback(enhanced, report, reason=reason)
+    assert len(completions.calls) == 1
+
+
+def test_server_status_failure_uses_a_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_groq: None,
+) -> None:
+    class ServerFailure(Exception):
+        """A status-bearing local SDK error double."""
+
+        def __init__(self, status_code: int) -> None:
+            self.status_code = status_code
+            super().__init__(f"HTTP {status_code}")
+
+    chunk_id = uuid4()
+    report = _report(chunk_id)
+    monkeypatch.setattr(document_synthesizer, "APIStatusError", ServerFailure)
+    completions = FakeCompletions(error=ServerFailure(503))
+    _install_client(monkeypatch, completions)
+
+    enhanced = document_synthesizer.DocumentSynthesizer().synthesize(
+        report,
+        (_knowledge(chunk_id),),
+    )
+
+    _assert_fallback(enhanced, report, reason="api_status")
+
+
+@pytest.mark.parametrize("status_code", [401, 403, 404])
+def test_non_transient_status_failures_do_not_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_groq: None,
+    status_code: int,
+) -> None:
+    class ClientStatusFailure(Exception):
+        """A non-recoverable status-bearing SDK error double."""
+
+        def __init__(self, value: int) -> None:
+            self.status_code = value
+            super().__init__(f"HTTP {value}")
+
+    chunk_id = uuid4()
+    monkeypatch.setattr(
+        document_synthesizer,
+        "APIStatusError",
+        ClientStatusFailure,
+    )
+    completions = FakeCompletions(error=ClientStatusFailure(status_code))
     _install_client(monkeypatch, completions)
 
     with pytest.raises(ReportSynthesisError):
@@ -408,4 +601,166 @@ def test_malformed_completion_and_sdk_failure_raise_report_error(
             (_knowledge(chunk_id),),
         )
 
-    assert len(completions.calls) == 1
+
+def test_authentication_failure_does_not_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_groq: None,
+) -> None:
+    class AuthenticationFailure(Exception):
+        """A local authentication SDK error double."""
+
+    chunk_id = uuid4()
+    monkeypatch.setattr(
+        document_synthesizer,
+        "AuthenticationError",
+        AuthenticationFailure,
+    )
+    completions = FakeCompletions(error=AuthenticationFailure("invalid key"))
+    _install_client(monkeypatch, completions)
+
+    with pytest.raises(ReportSynthesisError, match="authentication"):
+        document_synthesizer.DocumentSynthesizer().synthesize(
+            _report(chunk_id),
+            (_knowledge(chunk_id),),
+        )
+
+
+def test_unclassified_api_error_does_not_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_groq: None,
+) -> None:
+    class GenericApiFailure(Exception):
+        """A provider failure outside the transient recovery contract."""
+
+    chunk_id = uuid4()
+    monkeypatch.setattr(document_synthesizer, "APIError", GenericApiFailure)
+    completions = FakeCompletions(error=GenericApiFailure("unclassified"))
+    _install_client(monkeypatch, completions)
+
+    with pytest.raises(ReportSynthesisError, match="request failed"):
+        document_synthesizer.DocumentSynthesizer().synthesize(
+            _report(chunk_id),
+            (_knowledge(chunk_id),),
+        )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("unexpected implementation failure"),
+        TypeError("unexpected type failure"),
+        ValueError("unexpected value failure"),
+    ],
+)
+def test_unexpected_programming_errors_propagate(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_groq: None,
+    error: Exception,
+) -> None:
+    chunk_id = uuid4()
+    completions = FakeCompletions(error=error)
+    _install_client(monkeypatch, completions)
+
+    with pytest.raises(type(error)):
+        document_synthesizer.DocumentSynthesizer().synthesize(
+            _report(chunk_id),
+            (_knowledge(chunk_id),),
+        )
+
+
+def test_fallback_preserves_ordered_source_evidence_and_is_deterministic(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_groq: None,
+) -> None:
+    first_chunk_id = uuid4()
+    second_chunk_id = uuid4()
+    first = _knowledge(
+        first_chunk_id,
+        references=("Reference A", "Reference B"),
+        confidence=0.25,
+    )
+    second = _knowledge(
+        second_chunk_id,
+        references=("Reference C",),
+        confidence=0.75,
+    )
+    class ConnectionFailure(Exception):
+        """A local connection SDK error double."""
+
+    report = _report(first_chunk_id)
+    monkeypatch.setattr(
+        document_synthesizer,
+        "APIConnectionError",
+        ConnectionFailure,
+    )
+    completions = FakeCompletions(error=ConnectionFailure("offline"))
+    _install_client(monkeypatch, completions)
+    monkeypatch.setattr(document_synthesizer, "perf_counter", lambda: 10.0)
+    source_before = tuple(
+        item.model_dump(mode="python") for item in (first, second)
+    )
+
+    first_result = document_synthesizer.DocumentSynthesizer().synthesize(
+        report,
+        (first, second),
+    )
+    second_result = document_synthesizer.DocumentSynthesizer().synthesize(
+        report,
+        (first, second),
+    )
+
+    assert first_result == second_result
+    assert first_result.synthesis_metadata.elapsed_ms == 0.0
+    assert first_result.synthesis_metadata.source_evidence == (
+        SynthesisSourceEvidence(
+            chunk_id=first_chunk_id,
+            confidence=0.25,
+            references=("Reference A", "Reference B"),
+        ),
+        SynthesisSourceEvidence(
+            chunk_id=second_chunk_id,
+            confidence=0.75,
+            references=("Reference C",),
+        ),
+    )
+    assert tuple(
+        item.model_dump(mode="python") for item in (first, second)
+    ) == source_before
+
+
+def test_fallback_logs_one_safe_structured_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_groq: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class TimeoutFailure(Exception):
+        """A local timeout SDK error double."""
+
+    chunk_id = uuid4()
+    private_fact = "Never include this source text in logs."
+    report = _report(chunk_id)
+    knowledge = _knowledge(chunk_id, facts=(private_fact,))
+    monkeypatch.setattr(document_synthesizer, "APITimeoutError", TimeoutFailure)
+    completions = FakeCompletions(error=TimeoutFailure("timeout detail"))
+    _install_client(monkeypatch, completions)
+    caplog.set_level(logging.WARNING, logger=document_synthesizer.__name__)
+
+    enhanced = document_synthesizer.DocumentSynthesizer().synthesize(
+        report,
+        (knowledge,),
+    )
+
+    _assert_fallback(enhanced, report, reason="timeout")
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == document_synthesizer.__name__
+        and record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "provider=groq" in message
+    assert "fallback=true" in message
+    assert "reason=timeout" in message
+    assert private_fact not in message
+    assert "test-api-key" not in message
