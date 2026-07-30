@@ -37,6 +37,12 @@
 {% if entity.aliases %}
           <span class="entity-aliases">Also known as: {{ entity.aliases | join(", ") }}</span>
 {% endif %}
+{% if entity.confidence_label %}
+          <span class="entity-confidence">Confidence {{ entity.confidence_label }}</span>
+{% endif %}
+{% if entity.source_count %}
+          <span class="entity-evidence">{{ entity.source_count }} {{ "source" if entity.source_count == 1 else "sources" }}</span>
+{% endif %}
 {% if entity.source_labels %}
           <span class="entity-sources">{{ entity.source_labels | join(", ") }}</span>
 {% endif %}

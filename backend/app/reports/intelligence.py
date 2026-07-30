@@ -14,6 +14,7 @@ from hashlib import sha256
 import math
 import re
 from typing import TYPE_CHECKING, Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID
 
 from pydantic import (
@@ -102,17 +103,16 @@ _MAX_RELATED_CONCEPTS_PER_SOURCE = 32
 
 _ENTITY_ALIASES: dict[str, tuple[str, EntityCategory]] = {
     "pdf": ("PDF", "Technologies"),
-    "pdf document": ("PDF", "Technologies"),
-    "pdf documents": ("PDF", "Technologies"),
-    "pdf parser": ("PDF", "Technologies"),
-    "pdf parsers": ("PDF", "Technologies"),
-    "pdf reader": ("PDF", "Technologies"),
-    "pdf readers": ("PDF", "Technologies"),
     "portable document format": ("PDF", "Technologies"),
     "portable document formats": ("PDF", "Technologies"),
-    "adobe reader": ("Adobe", "Organizations"),
-    "adobe acrobat": ("Adobe", "Organizations"),
-    "acrobat reader": ("Adobe", "Organizations"),
+    "adobe reader": ("Adobe Reader", "Products"),
+    "acrobat reader": ("Adobe Reader", "Products"),
+    "adobe acrobat": ("Adobe Acrobat", "Products"),
+}
+_DEFINITION_CONCEPT_ALIASES: dict[str, str] = {
+    "pdf": "PDF",
+    "portable document format": "PDF",
+    "portable document formats": "PDF",
 }
 _DISPLAY_NAMES = {
     "pdf": "PDF",
@@ -158,6 +158,8 @@ _DISPLAY_NAMES = {
     "txt": "TXT",
     "markdown": "Markdown",
     "adobe": "Adobe",
+    "adobe reader": "Adobe Reader",
+    "adobe acrobat": "Adobe Acrobat",
 }
 _ORGANIZATIONS = frozenset({"adobe", "microsoft", "google", "openai", "apache"})
 _TECHNOLOGIES = frozenset({"pdf", "ocr", "api", "json", "xml", "html"})
@@ -165,7 +167,9 @@ _LIBRARIES = frozenset({"pypdf", "pdfplumber", "apache pdfbox", "itext"})
 _PROGRAMMING_LANGUAGES = frozenset(
     {"python", "java", "javascript", "typescript", "c", "c++", "c#", "go", "rust"}
 )
-_PRODUCTS = frozenset({"acrobat", "chrome", "safari"})
+_PRODUCTS = frozenset(
+    {"acrobat", "chrome", "safari", "adobe reader", "adobe acrobat"}
+)
 _LOCATIONS = frozenset(
     {
         "north america",
@@ -217,6 +221,114 @@ _STOP_WORDS = frozenset(
         "with",
     }
 )
+_LOW_INFORMATION_ENTITY_PHRASES = frozenset(
+    {
+        "upload form",
+        "upload forms",
+        "parser",
+        "parsers",
+        "pdf parser",
+        "pdf parsers",
+        "pdf reader",
+        "pdf readers",
+        "pdf document",
+        "pdf documents",
+        "document",
+        "documents",
+        "document processing",
+        "document processing workflow",
+        "document processing workflows",
+        "workflow",
+        "workflows",
+        "government agency",
+        "government agencies",
+        "financial institution",
+        "financial institutions",
+        "healthcare organization",
+        "healthcare organizations",
+        "industry",
+        "industries",
+        "organization",
+        "organizations",
+        "role",
+        "roles",
+        "professional",
+        "professionals",
+        "system",
+        "systems",
+        "feature",
+        "features",
+        "process",
+        "processes",
+        "service",
+        "services",
+        "application",
+        "applications",
+        "technology",
+        "technologies",
+        "standard",
+        "standards",
+        "format",
+        "formats",
+        "platform",
+        "platforms",
+        "performance",
+        "security",
+        "accessibility",
+    }
+)
+_LOW_INFORMATION_ENTITY_TOKENS = frozenset(
+    {
+        "upload",
+        "form",
+        "forms",
+        "parser",
+        "parsers",
+        "reader",
+        "readers",
+        "document",
+        "documents",
+        "processing",
+        "workflow",
+        "workflows",
+        "government",
+        "agency",
+        "agencies",
+        "financial",
+        "institution",
+        "institutions",
+        "healthcare",
+        "organization",
+        "organizations",
+        "industry",
+        "industries",
+        "role",
+        "roles",
+        "generic",
+        "common",
+        "improved",
+        "improve",
+        "improving",
+        "created",
+        "create",
+        "processing",
+    }
+)
+_RELATION_CONCEPT_EXCLUSIONS = frozenset(
+    {"it", "this", "that", "they", "these", "those", "there", "the document"}
+)
+_TRACKING_QUERY_PARAMETERS = frozenset(
+    {
+        "fbclid",
+        "gclid",
+        "dclid",
+        "msclkid",
+        "mc_cid",
+        "mc_eid",
+        "_hsenc",
+        "_hsmi",
+    }
+)
 
 
 class _IntelligenceModel(BaseModel):
@@ -259,7 +371,7 @@ class NormalizedEntity(_IntelligenceModel):
     """One canonical entity with its retained aliases and source evidence."""
 
     name: str = Field(min_length=1)
-    aliases: tuple[str, ...] = Field(min_length=1)
+    aliases: tuple[str, ...] = Field(default_factory=tuple)
     supporting_chunk_ids: tuple[UUID, ...] = Field(min_length=1)
     references: tuple[str, ...] = Field(default_factory=tuple)
     confidence: StrictFloat = Field(..., ge=0.0, le=1.0)
@@ -509,9 +621,10 @@ class _EvidenceAccumulator:
             self.supporting_chunk_ids.append(knowledge_object.chunk_id)
 
         for reference in knowledge_object.references:
-            normalized = _normalize_whitespace(reference)
-            if normalized and normalized not in self._seen_references:
-                self._seen_references.add(normalized)
+            normalized = _normalize_reference(reference)
+            normalized_key = normalized.casefold()
+            if normalized and normalized_key not in self._seen_references:
+                self._seen_references.add(normalized_key)
                 self.references.append(normalized)
 
 
@@ -526,9 +639,12 @@ class _EntityAccumulator:
     _seen_aliases: set[str] = field(default_factory=set)
 
     def add(self, raw_value: str, knowledge_object: KnowledgeObject) -> None:
-        """Retain an original alias and its source only once."""
+        """Retain only genuine alternate names and source evidence once."""
         alias_key = raw_value.casefold()
-        if alias_key not in self._seen_aliases:
+        if (
+            alias_key != self.name.casefold()
+            and alias_key not in self._seen_aliases
+        ):
             self._seen_aliases.add(alias_key)
             self.aliases.append(raw_value)
         self.evidence.add_source(knowledge_object)
@@ -584,7 +700,11 @@ class ReportIntelligenceBuilder:
         knowledge_by_id = self._validate_knowledge_objects(knowledge_objects)
         self._validate_authoritative_provenance(report, knowledge_by_id)
 
-        entity_groups = self._build_entity_groups(knowledge_objects, knowledge_by_id)
+        entity_groups = self._build_entity_groups(
+            report,
+            knowledge_objects,
+            knowledge_by_id,
+        )
         definitions = self._build_definitions(knowledge_objects, knowledge_by_id)
         timeline = self._build_timeline(knowledge_objects, knowledge_by_id)
         findings = self._build_findings(report, knowledge_by_id, entity_groups)
@@ -709,15 +829,27 @@ class ReportIntelligenceBuilder:
     @classmethod
     def _build_entity_groups(
         cls,
+        report: EnhancedResearchReport,
         knowledge_objects: tuple[KnowledgeObject, ...],
         knowledge_by_id: dict[UUID, KnowledgeObject],
     ) -> tuple[EntityGroup, ...]:
-        """Normalize, categorize, and alphabetize entities with source evidence."""
+        """Filter, normalize, and rank every retained entity with evidence."""
         accumulators: dict[str, _EntityAccumulator] = {}
+        raw_entity_frequency = Counter(
+            cls._normalized_key(raw_entity)
+            for knowledge_object in knowledge_objects
+            for raw_entity in knowledge_object.entities
+            if _normalize_whitespace(raw_entity)
+        )
         for knowledge_object in knowledge_objects:
             for raw_entity in knowledge_object.entities:
                 entity = _normalize_whitespace(raw_entity)
                 if not entity:
+                    continue
+                if not cls._should_retain_entity(
+                    entity,
+                    raw_entity_frequency[cls._normalized_key(entity)],
+                ):
                     continue
                 canonical_name, category = cls._classify_entity(entity)
                 entity_key = canonical_name.casefold()
@@ -727,16 +859,30 @@ class ReportIntelligenceBuilder:
                     accumulators[entity_key] = accumulator
                 accumulator.add(entity, knowledge_object)
 
-        grouped: dict[EntityCategory, list[NormalizedEntity]] = {}
-        for accumulator in accumulators.values():
+        finding_participation = cls._entity_finding_participation(
+            accumulators,
+            report,
+        )
+        grouped: dict[
+            EntityCategory,
+            list[tuple[NormalizedEntity, tuple[float, int, int, int]]],
+        ] = {}
+        for entity_key, accumulator in accumulators.items():
             source_ids = tuple(accumulator.evidence.supporting_chunk_ids)
+            entity = NormalizedEntity(
+                name=accumulator.name,
+                aliases=tuple(accumulator.aliases),
+                supporting_chunk_ids=source_ids,
+                references=tuple(accumulator.evidence.references),
+                confidence=cls._mean_confidence(source_ids, knowledge_by_id),
+            )
             grouped.setdefault(accumulator.category, []).append(
-                NormalizedEntity(
-                    name=accumulator.name,
-                    aliases=tuple(accumulator.aliases),
-                    supporting_chunk_ids=source_ids,
-                    references=tuple(accumulator.evidence.references),
-                    confidence=cls._mean_confidence(source_ids, knowledge_by_id),
+                (
+                    entity,
+                    cls._entity_rank_key(
+                        entity,
+                        finding_participation.get(entity_key, 0),
+                    ),
                 )
             )
 
@@ -744,9 +890,17 @@ class ReportIntelligenceBuilder:
             EntityGroup(
                 category=category,
                 entities=tuple(
-                    sorted(
+                    entity
+                    for entity, _ in sorted(
                         entities,
-                        key=lambda entity: (entity.name.casefold(), entity.name),
+                        key=lambda item: (
+                            -item[1][0],
+                            -item[1][1],
+                            -item[1][2],
+                            -item[1][3],
+                            item[0].name.casefold(),
+                            item[0].name,
+                        ),
                     )
                 ),
             )
@@ -755,6 +909,149 @@ class ReportIntelligenceBuilder:
                 key=lambda item: _CATEGORY_INDEX[item[0]],
             )
         )
+
+    @classmethod
+    def _should_retain_entity(cls, value: str, occurrence_count: int) -> bool:
+        """Reject generic extracted phrases while retaining curated named values."""
+        key = cls._normalized_key(value)
+        if not key or key in _LOW_INFORMATION_ENTITY_PHRASES:
+            return False
+        if cls._is_curated_entity_key(key):
+            return True
+
+        tokens = tuple(_TOKEN_PATTERN.findall(value))
+        content_tokens = tuple(token.casefold() for token in tokens if token)
+        if not content_tokens:
+            return False
+        if all(token in _LOW_INFORMATION_ENTITY_TOKENS for token in content_tokens):
+            return False
+        if cls._looks_like_named_entity(tokens):
+            return True
+        if any(
+            token in _LOW_INFORMATION_ENTITY_TOKENS
+            for token in content_tokens
+        ) and len(content_tokens) <= 3:
+            return False
+
+        # A repeated lower-case phrase remains eligible only when it contains
+        # an identifier-like token.  This keeps recurring product identifiers
+        # without promoting generic workflow language.
+        return occurrence_count >= 2 and any(
+            any(character.isdigit() for character in token)
+            or "+" in token
+            or "#" in token
+            for token in tokens
+        )
+
+    @staticmethod
+    def _is_curated_entity_key(key: str) -> bool:
+        """Identify taxonomy values before applying conservative heuristics."""
+        return (
+            key in _ENTITY_ALIASES
+            or key in _DISPLAY_NAMES
+            or key in _ORGANIZATIONS
+            or key in _TECHNOLOGIES
+            or key in _LIBRARIES
+            or key in _PROGRAMMING_LANGUAGES
+            or key in _PRODUCTS
+            or key in _LOCATIONS
+            or key in _FILE_FORMATS
+            or key in _CONCEPTS
+            or key.startswith(("iso ", "pdf/", "ecma"))
+        )
+
+    @staticmethod
+    def _looks_like_named_entity(tokens: tuple[str, ...]) -> bool:
+        """Use a deliberately narrow proper-name heuristic for unknown terms."""
+        alphabetic = tuple(token for token in tokens if any(char.isalpha() for char in token))
+        if not alphabetic:
+            return False
+        if any(
+            token.isupper() and len(token) >= 2
+            for token in alphabetic
+        ):
+            return True
+        if any(
+            len(token) >= 3
+            and token[0].islower()
+            and any(character.isupper() for character in token[1:])
+            for token in alphabetic
+        ):
+            return True
+        return all(
+            token[0].isupper() or token.isupper()
+            for token in alphabetic
+        )
+
+    @staticmethod
+    def _entity_rank_key(
+        entity: NormalizedEntity,
+        finding_participation: int,
+    ) -> tuple[float, int, int, int]:
+        """Score all retained entities without imposing a presentation limit."""
+        source_count = len(entity.supporting_chunk_ids)
+        reference_count = len(entity.references)
+        score = (
+            entity.confidence
+            * (1 + source_count)
+            * (1 + reference_count)
+            * (1 + finding_participation)
+        )
+        return score, source_count, reference_count, finding_participation
+
+    @classmethod
+    def _entity_finding_participation(
+        cls,
+        accumulators: dict[str, _EntityAccumulator],
+        report: EnhancedResearchReport,
+    ) -> dict[str, int]:
+        """Index authoritative findings once for deterministic entity ranking.
+
+        The previous per-entity scan repeatedly tokenized every finding.  This
+        index keeps temporary state proportional to the finding vocabulary and
+        checks only the least-frequent entity-token candidates for each entity.
+        It preserves the exact participation rule used for ranking.
+        """
+        findings = (
+            *(report.base_report.findings),
+            *(report.findings),
+            *(report.appendix_findings),
+        )
+        finding_tokens: list[frozenset[str]] = []
+        finding_source_ids: list[frozenset[UUID]] = []
+        token_index: dict[str, list[int]] = {}
+
+        for index, finding in enumerate(findings):
+            tokens = _content_tokens(f"{finding.title} {finding.description}")
+            finding_tokens.append(tokens)
+            finding_source_ids.append(frozenset(finding.supporting_chunk_ids))
+            for token in tokens:
+                token_index.setdefault(token, []).append(index)
+
+        participation: dict[str, int] = {}
+        for entity_key, accumulator in accumulators.items():
+            entity_tokens = _content_tokens(accumulator.name)
+            if not entity_tokens:
+                participation[entity_key] = 0
+                continue
+
+            candidate_lists = tuple(
+                token_index.get(token, ()) for token in entity_tokens
+            )
+            if not candidate_lists or any(not values for values in candidate_lists):
+                participation[entity_key] = 0
+                continue
+
+            candidates = min(candidate_lists, key=len)
+            source_ids = frozenset(accumulator.evidence.supporting_chunk_ids)
+            participation[entity_key] = sum(
+                1
+                for index in candidates
+                if source_ids.intersection(finding_source_ids[index])
+                and entity_tokens.issubset(finding_tokens[index])
+            )
+
+        return participation
 
     @staticmethod
     def _classify_entity(value: str) -> tuple[str, EntityCategory]:
@@ -866,33 +1163,77 @@ class ReportIntelligenceBuilder:
     def _parse_definition(cls, raw_definition: str) -> tuple[str, str, str]:
         """Extract a reliable concept or retain one opaque definition unchanged."""
         definition = _normalize_whitespace(raw_definition)
-        colon_match = re.match(r"^(?P<concept>[^:]{1,80}):\s*(?P<body>.+)$", definition)
+        delimiter_match = re.match(
+            r"^(?P<concept>[^:=—]{1,80}?)\s*(?::|=|—|\s-\s)\s*"
+            r"(?P<body>.+)$",
+            definition,
+        )
         relation_match = re.match(
-            r"^(?P<concept>.{1,80}?)\s+(?:is|means|refers to)\s+(?P<body>.+)$",
+            r"^(?P<concept>.{1,80}?)\s+(?:is|means|refers to|describes)\s+"
+            r"(?P<body>.+)$",
             definition,
             flags=re.IGNORECASE,
         )
-        match = colon_match or relation_match
-        if match is None:
+        match = delimiter_match or relation_match
+        if match is None or not cls._is_reliable_definition_concept(
+            match.group("concept")
+        ):
             digest = sha256(definition.encode("utf-8")).hexdigest()
-            concept = cls._opaque_definition_concept(digest)
+            concept = cls._opaque_definition_concept(definition)
             return concept, definition, f"opaque:{digest}"
 
         concept = cls._normalize_definition_concept(match.group("concept"))
         body = _normalize_whitespace(match.group("body"))
+        if not body:
+            digest = sha256(definition.encode("utf-8")).hexdigest()
+            return (
+                cls._opaque_definition_concept(definition),
+                definition,
+                f"opaque:{digest}",
+            )
         return concept, body, f"concept:{concept.casefold()}"
+
+    @staticmethod
+    def _is_reliable_definition_concept(value: str) -> bool:
+        """Require a compact named concept rather than a sentence fragment."""
+        concept = _normalize_whitespace(value).strip("-—:=. ")
+        key = concept.casefold()
+        tokens = _TOKEN_PATTERN.findall(concept)
+        return bool(
+            concept
+            and key not in _RELATION_CONCEPT_EXCLUSIONS
+            and 1 <= len(tokens) <= 10
+            and not concept.endswith((".", "!", "?"))
+        )
 
     @classmethod
     def _normalize_definition_concept(cls, value: str) -> str:
         """Apply entity alias normalization before definition grouping."""
-        normalized = _normalize_whitespace(value)
+        normalized = _normalize_whitespace(value).strip("-—:=. ")
+        canonical_alias = _DEFINITION_CONCEPT_ALIASES.get(normalized.casefold())
+        if canonical_alias is not None:
+            return canonical_alias
         canonical, _ = cls._classify_entity(normalized)
         return canonical
 
     @staticmethod
-    def _opaque_definition_concept(digest: str) -> str:
-        """Return a reserved, deterministic display key for opaque evidence."""
-        return f"Unparsed definition {digest[:12]}"
+    def _opaque_definition_concept(definition: str) -> str:
+        """Derive a readable deterministic concept label for opaque evidence."""
+        candidate = _normalize_whitespace(definition)
+        if not candidate:
+            return "Unknown Concept"
+        candidate = re.split(r"[.!?;]", candidate, maxsplit=1)[0]
+        candidate = re.split(r"\s*(?::|=|—|\s-\s)\s*", candidate, maxsplit=1)[0]
+        words = tuple(_TOKEN_PATTERN.findall(candidate))
+        if not words:
+            return "Unknown Concept"
+        readable_words = words[:8]
+        label = " ".join(readable_words).strip()
+        if not label:
+            return "Unknown Concept"
+        if len(words) > len(readable_words):
+            return label + "…"
+        return label
 
     @staticmethod
     def _make_opaque_definition_concepts_unique(
@@ -908,6 +1249,10 @@ class ReportIntelligenceBuilder:
             if not accumulator.is_opaque:
                 continue
             base = accumulator.concept
+            if base.casefold() in used_concepts:
+                # A bare or malformed value that repeats a parsed concept is
+                # not a meaningful display concept in its own right.
+                base = "Unknown Concept"
             candidate = base
             suffix = 2
             while candidate.casefold() in used_concepts:
@@ -1250,7 +1595,7 @@ class ReportIntelligenceBuilder:
             if knowledge_object.chunk_id not in used:
                 continue
             for raw_reference in knowledge_object.references:
-                reference = _normalize_whitespace(raw_reference)
+                reference = _normalize_reference(raw_reference)
                 if not reference:
                     continue
                 key = reference.casefold()
@@ -1295,7 +1640,7 @@ class ReportIntelligenceBuilder:
         seen: set[str] = set()
         for source_id in source_ids:
             for raw_reference in knowledge_by_id[source_id].references:
-                reference = _normalize_whitespace(raw_reference)
+                reference = _normalize_reference(raw_reference)
                 key = reference.casefold()
                 if reference and key not in seen:
                     seen.add(key)
@@ -1311,6 +1656,58 @@ class ReportIntelligenceBuilder:
 def _normalize_whitespace(value: str) -> str:
     """Collapse arbitrary whitespace without changing meaningful source wording."""
     return _SPACE_PATTERN.sub(" ", value).strip()
+
+
+def _normalize_reference(value: str) -> str:
+    """Normalize citation text and safe HTTP(S) URL variations deterministically."""
+    normalized = _normalize_whitespace(value)
+    if not normalized:
+        return ""
+    try:
+        parsed = urlsplit(normalized)
+    except ValueError:
+        return normalized
+    if parsed.scheme.casefold() not in {"http", "https"} or not parsed.netloc:
+        return normalized
+    try:
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return normalized
+    if hostname is None:
+        return normalized
+
+    host = hostname.casefold()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    userinfo = ""
+    if "@" in parsed.netloc:
+        userinfo = parsed.netloc.rsplit("@", maxsplit=1)[0] + "@"
+    include_port = port is not None and not (
+        (parsed.scheme.casefold() == "http" and port == 80)
+        or (parsed.scheme.casefold() == "https" and port == 443)
+    )
+    netloc = userinfo + host + (f":{port}" if include_port else "")
+    path = parsed.path
+    if path == "/":
+        path = ""
+    query = urlencode(
+        tuple(
+            (name, item)
+            for name, item in parse_qsl(parsed.query, keep_blank_values=True)
+            if not _is_tracking_query_parameter(name)
+        ),
+        doseq=True,
+    )
+    return urlunsplit(
+        (parsed.scheme.casefold(), netloc, path, query, parsed.fragment)
+    )
+
+
+def _is_tracking_query_parameter(name: str) -> bool:
+    """Recognize only well-known non-semantic URL tracking parameters."""
+    normalized = name.casefold()
+    return normalized.startswith("utm_") or normalized in _TRACKING_QUERY_PARAMETERS
 
 
 def _normalized_text(value: str) -> str:

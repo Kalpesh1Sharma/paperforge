@@ -437,7 +437,10 @@ def test_html_renderer_renders_optional_intelligence_through_safe_context() -> N
     assert "<strong>Performance improvement</strong>" not in first
     assert "HIGH" in first
     assert "LOW" in first
-    assert "92%" in first
+    # Display confidence is calibrated in the shared presentation context;
+    # raw immutable model values remain untouched.
+    assert "<dt>Confidence</dt><dd>100%</dd>" in first
+    assert "<dt>Confidence</dt><dd>60%</dd>" in first
     assert "2 sources" in first
     assert "Organizations" in first
     assert "Also known as: PF" in first
@@ -447,6 +450,53 @@ def test_html_renderer_renders_optional_intelligence_through_safe_context() -> N
     assert "score" not in first.lower()
     assert str(_CHUNK_ID) not in first
     assert str(_SECOND_CHUNK_ID) not in first
+
+
+def test_html_renderer_groups_findings_and_limits_ranked_entities() -> None:
+    """HTML keeps full intelligence intact while displaying the top eight chips."""
+    ranked_entities = tuple(
+        NormalizedEntity(
+            name=f"Entity {index:02d}",
+            aliases=(),
+            supporting_chunk_ids=(_CHUNK_ID,),
+            references=("https://example.com/source",),
+            confidence=0.9,
+        )
+        for index in range(1, 11)
+    )
+    report = _enhanced_report().model_copy(
+        update={
+            "report_intelligence": ReportIntelligence(
+                entity_groups=(
+                    EntityGroup(
+                        category="Technologies",
+                        entities=ranked_entities,
+                    ),
+                ),
+                findings=(
+                    EnrichedFinding(
+                        source_kind="finding",
+                        source_index=0,
+                        title="PDF history",
+                        summary="PDF was introduced as a portable document format.",
+                        supporting_chunk_ids=(_CHUNK_ID,),
+                        references=("https://example.com/source",),
+                        confidence=0.9,
+                        importance="high",
+                    ),
+                ),
+            )
+        }
+    )
+
+    html = HTMLRenderer().render(report)
+
+    assert '<h3 class="finding-group-heading">History</h3>' in html
+    for index in range(1, 9):
+        assert f"Entity {index:02d}" in html
+    assert "Entity 09" not in html
+    assert "Entity 10" not in html
+    assert len(report.report_intelligence.entity_groups[0].entities) == 10
 
 
 def test_html_renderer_maps_unexpected_template_errors(

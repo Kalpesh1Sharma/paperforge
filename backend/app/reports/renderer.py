@@ -25,6 +25,7 @@ from app.reports.presentation import (
     EnhancedReportRenderContext,
     RenderDefinition,
     RenderFinding,
+    RenderFindingGroup,
     RenderReference,
     RenderTimelineEvent,
 )
@@ -111,9 +112,9 @@ class MarkdownRenderer:
         blocks = [
             f"# {base_report.title}",
             cls._text_block("Executive Summary", context.report.executive_summary),
-            cls._bullet_block(
+            cls._enhanced_finding_block(
                 "Key Findings",
-                cls._enhanced_finding_items(context.findings),
+                context.finding_groups,
             ),
             cls._bullet_block(
                 "Important Entities",
@@ -144,13 +145,40 @@ class MarkdownRenderer:
         )
         blocks.append(cls._enhanced_reference_block(context.references))
         blocks.append(
-            cls._bullet_block(
+            cls._enhanced_finding_block(
                 "Appendix",
-                cls._enhanced_finding_items(context.appendix_findings)
-                or ("No additional findings.",),
+                context.appendix_finding_groups,
+                empty_text="No additional findings.",
             )
         )
         return "\n\n".join(block.rstrip("\n") for block in blocks) + "\n"
+
+    @staticmethod
+    def _enhanced_finding_block(
+        heading: str,
+        finding_groups: tuple[RenderFindingGroup, ...],
+        *,
+        empty_text: str | None = None,
+    ) -> str:
+        """Render transient finding groups without changing canonical findings."""
+        if not finding_groups:
+            return (
+                f"## {heading}\n\n{empty_text}"
+                if empty_text is not None
+                else f"## {heading}"
+            )
+
+        groups: list[str] = []
+        for group in finding_groups:
+            groups.append(
+                "### {heading}\n\n{items}".format(
+                    heading=group.heading,
+                    items="\n".join(
+                        MarkdownRenderer._enhanced_finding_items(group.findings)
+                    ),
+                )
+            )
+        return f"## {heading}\n\n" + "\n\n".join(groups)
 
     @staticmethod
     def _enhanced_finding_items(
@@ -207,7 +235,29 @@ class MarkdownRenderer:
                         entity.source_labels
                     ),
                 )
-                items.append(f"  - {item}" if group.category is not None else f"- {item}")
+                indent = "  " if group.category is not None else ""
+                details = [f"{indent}- {item}"]
+                if entity.confidence_label is not None:
+                    detail_indent = indent + "  "
+                    details.append(
+                        f"{detail_indent}- Confidence: {entity.confidence_label}"
+                    )
+                    details.append(
+                        "{indent}- Evidence: {count} {label}".format(
+                            indent=detail_indent,
+                            count=entity.source_count,
+                            label=(
+                                "source"
+                                if entity.source_count == 1
+                                else "sources"
+                            ),
+                        )
+                    )
+                if entity.references:
+                    details.append(
+                        f"{indent}  - References: {'; '.join(entity.references)}"
+                    )
+                items.append("\n".join(details))
         return tuple(items)
 
     @staticmethod

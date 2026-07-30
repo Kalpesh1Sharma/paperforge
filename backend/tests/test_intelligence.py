@@ -228,36 +228,128 @@ def test_builder_creates_an_immutable_overlay_without_changing_canonical_data() 
         result.report_intelligence = None  # type: ignore[misc]
 
 
-def test_builder_normalizes_entities_in_fixed_category_and_alpha_order() -> None:
-    """Curated aliases merge while unknown values remain separate and traceable."""
+def test_builder_filters_generic_entities_and_ranks_retained_values() -> None:
+    """Generic phrases vanish while named entities remain ranked and traceable."""
     result = ReportIntelligenceBuilder().build(_enhanced_report(), _knowledge_objects())
     groups = _entity_map(result)
 
     assert tuple(groups) == (
-        "Organizations",
         "Technologies",
         "Standards",
         "Libraries",
         "Programming Languages",
+        "Products",
         "File Formats",
         "Concepts",
         "Other",
     )
-    organizations = groups["Organizations"]
     technologies = groups["Technologies"]
     libraries = groups["Libraries"]
-    assert tuple(entity.name for entity in organizations) == ("Adobe",)
-    assert organizations[0].aliases == ("Adobe Acrobat", "Adobe Reader")
+    products = groups["Products"]
     assert tuple(entity.name for entity in technologies) == ("PDF",)
-    assert technologies[0].aliases == ("PDF Documents", "PDF", "PDF Parsers")
-    assert tuple(entity.name for entity in libraries) == ("Apache PDFBox", "PyPDF")
+    assert technologies[0].aliases == ()
+    assert tuple(entity.name for entity in products) == (
+        "Adobe Acrobat",
+        "Adobe Reader",
+    )
+    assert all(entity.aliases == () for entity in products)
+    assert tuple(entity.name for entity in libraries) == ("PyPDF", "Apache PDFBox")
     assert groups["Other"][0].name == "Unfamiliar System"
     assert technologies[0].supporting_chunk_ids == (
-        _CHUNK_IDS[0],
         _CHUNK_IDS[1],
         _CHUNK_IDS[3],
     )
     assert technologies[0].confidence == pytest.approx(0.9)
+    assert "PDF Parsers" not in {
+        entity.name
+        for group in result.report_intelligence.entity_groups
+        for entity in group.entities
+    }
+
+
+def test_builder_retains_all_ranked_entities_and_keeps_related_pdf_concepts_separate() -> None:
+    """The overlay ranks all eligible entities without applying display limits."""
+    first, second = _CHUNK_IDS[:2]
+    knowledge_objects = (
+        KnowledgeObject(
+            chunk_id=first,
+            entities=(
+                "PDF",
+                "Portable Document Format",
+                "PDF Readers",
+                "PDF Parsers",
+                "Upload Forms",
+                "Document Processing Workflows",
+                "Government Agencies",
+                "Financial Institutions",
+                "Healthcare Organizations",
+                "Named Entity 01",
+                "Named Entity 02",
+                "Named Entity 03",
+                "Named Entity 04",
+                "Named Entity 05",
+                "Named Entity 06",
+                "Named Entity 07",
+                "Named Entity 08",
+                "Named Entity 09",
+            ),
+            facts=(),
+            definitions=(),
+            metrics=(),
+            dates=(),
+            references=("https://example.test/source",),
+            confidence=0.4,
+        ),
+        KnowledgeObject(
+            chunk_id=second,
+            entities=("Adobe PDF Reader",),
+            facts=(),
+            definitions=(),
+            metrics=(),
+            dates=(),
+            references=("https://example.test/high-confidence",),
+            confidence=0.9,
+        ),
+    )
+
+    result = ReportIntelligenceBuilder().build(
+        _empty_enhanced_report(),
+        knowledge_objects,
+    )
+    groups = _entity_map(result)
+
+    pdf = groups["Technologies"][0]
+    assert pdf.name == "PDF"
+    assert pdf.aliases == ("Portable Document Format",)
+    assert pdf.supporting_chunk_ids == (first,)
+    assert tuple(entity.name for entity in groups["Other"]) == (
+        "Adobe PDF Reader",
+        "Named Entity 01",
+        "Named Entity 02",
+        "Named Entity 03",
+        "Named Entity 04",
+        "Named Entity 05",
+        "Named Entity 06",
+        "Named Entity 07",
+        "Named Entity 08",
+        "Named Entity 09",
+    )
+    retained_names = {
+        entity.name
+        for group in result.report_intelligence.entity_groups
+        for entity in group.entities
+    }
+    assert not retained_names.intersection(
+        {
+            "PDF Readers",
+            "PDF Parsers",
+            "Upload Forms",
+            "Document Processing Workflows",
+            "Government Agencies",
+            "Financial Institutions",
+            "Healthcare Organizations",
+        }
+    )
 
 
 def test_builder_consolidates_definitions_and_retains_related_evidence() -> None:
@@ -345,8 +437,76 @@ def test_builder_groups_pdf_alias_definition_concepts_before_validation() -> Non
     assert definition.confidence == pytest.approx(0.6)
 
 
-def test_builder_keeps_opaque_definitions_in_a_reserved_concept_namespace() -> None:
-    """An unparseable value cannot collide with a parsed canonical concept."""
+def test_builder_parses_extended_multiline_definition_patterns() -> None:
+    """Supported delimiters merge concepts while preserving readable evidence."""
+    first, second, third = _CHUNK_IDS[:3]
+    knowledge_objects = (
+        KnowledgeObject(
+            chunk_id=first,
+            entities=(),
+            facts=(),
+            definitions=(
+                "PDF - A portable document format that preserves layout\n"
+                "across platforms.",
+                "OCR = Optical character recognition.",
+            ),
+            metrics=(),
+            dates=(),
+            references=("First reference",),
+            confidence=0.7,
+        ),
+        KnowledgeObject(
+            chunk_id=second,
+            entities=(),
+            facts=(),
+            definitions=(
+                "Portable Document Format — A document format for exchange.",
+                "Annotation describes document markup.",
+            ),
+            metrics=(),
+            dates=(),
+            references=("Second reference",),
+            confidence=0.9,
+        ),
+        KnowledgeObject(
+            chunk_id=third,
+            entities=(),
+            facts=(),
+            definitions=("This definition has no recognized relation",),
+            metrics=(),
+            dates=(),
+            references=(),
+            confidence=0.5,
+        ),
+    )
+
+    result = ReportIntelligenceBuilder().build(
+        _empty_enhanced_report(),
+        knowledge_objects,
+    )
+    assert result.report_intelligence is not None
+    definitions = {
+        definition.concept: definition
+        for definition in result.report_intelligence.definitions
+    }
+
+    assert definitions["PDF"].definition == (
+        "A portable document format that preserves layout across platforms."
+    )
+    assert definitions["PDF"].supporting_chunk_ids == (first, second)
+    assert definitions["OCR"].definition == "Optical character recognition."
+    assert definitions["Annotation"].definition == "document markup."
+    opaque = next(
+        definition
+        for definition in definitions.values()
+        if definition.definition == "This definition has no recognized relation"
+    )
+    assert opaque.concept == "This definition has no recognized relation"
+    assert "Unparsed" not in opaque.concept
+
+
+def test_builder_keeps_opaque_definitions_human_readable_and_unique() -> None:
+    """An unparseable value never exposes an implementation identifier."""
     first, second = _CHUNK_IDS[:2]
     result = ReportIntelligenceBuilder().build(
         _empty_enhanced_report(),
@@ -379,7 +539,7 @@ def test_builder_keeps_opaque_definitions_in_a_reserved_concept_namespace() -> N
     assert len(definitions) == 2
     parsed = next(definition for definition in definitions if definition.concept == "PDF")
     opaque = next(definition for definition in definitions if definition is not parsed)
-    assert opaque.concept.startswith("Unparsed definition ")
+    assert opaque.concept == "Unknown Concept"
     assert opaque.concept != parsed.concept
     assert opaque.definition == "PDF"
 
@@ -487,6 +647,59 @@ def test_builder_consolidates_references_and_excludes_orphan_sources() -> None:
     assert all(reference.reference != "Orphan Reference" for reference in references)
 
 
+def test_builder_normalizes_and_deduplicates_safe_url_references() -> None:
+    """Equivalent HTTP(S) references merge without dropping meaningful detail."""
+    first, second, third = _CHUNK_IDS[:3]
+    knowledge_objects = (
+        KnowledgeObject(
+            chunk_id=first,
+            entities=("PDF",),
+            facts=(),
+            definitions=(),
+            metrics=(),
+            dates=(),
+            references=(
+                "HTTPS://Example.COM:443/?utm_source=mail&b=2#Section",
+                "https://example.com/docs/?ref=research&item=1",
+            ),
+            confidence=0.8,
+        ),
+        KnowledgeObject(
+            chunk_id=second,
+            entities=("PDF",),
+            facts=(),
+            definitions=(),
+            metrics=(),
+            dates=(),
+            references=("https://example.com/?b=2#Section",),
+            confidence=0.7,
+        ),
+        KnowledgeObject(
+            chunk_id=third,
+            entities=("PDF",),
+            facts=(),
+            definitions=(),
+            metrics=(),
+            dates=(),
+            references=("https://EXAMPLE.com:443/?b=2&gclid=tracking#Section",),
+            confidence=0.6,
+        ),
+    )
+
+    result = ReportIntelligenceBuilder().build(
+        _empty_enhanced_report(),
+        knowledge_objects,
+    )
+
+    assert result.report_intelligence is not None
+    references = result.report_intelligence.references
+    assert tuple(reference.reference for reference in references) == (
+        "https://example.com/docs/?ref=research&item=1",
+        "https://example.com?b=2#Section",
+    )
+    assert references[1].supporting_chunk_ids == (first, second, third)
+
+
 def test_builder_is_deterministic_and_idempotent_for_identical_input() -> None:
     """Rebuilding an overlay produces equal values without changing base fields."""
     builder = ReportIntelligenceBuilder()
@@ -521,6 +734,14 @@ def test_models_are_strict_frozen_and_builder_rejects_invalid_provenance() -> No
         references=(),
         confidence=1.0,
     )
+    entity_without_aliases = NormalizedEntity(
+        name="ISO 32000",
+        aliases=(),
+        supporting_chunk_ids=(_CHUNK_IDS[0],),
+        references=(),
+        confidence=1.0,
+    )
+    assert entity_without_aliases.aliases == ()
     with pytest.raises(ValidationError):
         entity.name = "Changed"  # type: ignore[misc]
     with pytest.raises(ValidationError):

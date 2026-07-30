@@ -28,6 +28,7 @@ from app.reports import (
     SynthesisMetadata,
     TimelineEvent,
 )
+from app.reports.presentation import EnhancedReportRenderContext
 
 
 def _knowledge(
@@ -575,7 +576,8 @@ def test_enhanced_renderer_uses_optional_intelligence_without_scores() -> None:
     assert "Implementation context" in markdown
     assert "Importance: HIGH" in markdown
     assert "Importance: LOW" in markdown
-    assert "Confidence: 92%" in markdown
+    assert "Confidence: 100%" in markdown
+    assert "Confidence: 60%" in markdown
     assert "Evidence: 2 sources" in markdown
     assert "Organizations" in markdown
     assert "also known as: PF" in markdown
@@ -584,3 +586,208 @@ def test_enhanced_renderer_uses_optional_intelligence_without_scores() -> None:
     assert "score" not in markdown.lower()
     assert str(first_chunk_id) not in markdown
     assert str(second_chunk_id) not in markdown
+
+
+def test_enhanced_presentation_limits_entities_without_discarding_intelligence() -> None:
+    """Only the render context applies the private eight-entity display limit."""
+    chunk_ids = tuple(uuid4() for _ in range(9))
+    entities = tuple(
+        NormalizedEntity(
+            name=f"Technology {index}",
+            aliases=(f"Tech {index}",),
+            supporting_chunk_ids=(chunk_id,),
+            references=(f"https://example.com/reference/{index}",),
+            confidence=0.8,
+        )
+        for index, chunk_id in enumerate(chunk_ids, start=1)
+    )
+    intelligence = ReportIntelligence(
+        entity_groups=(
+            EntityGroup(category="Technologies", entities=entities),
+        ),
+        references=tuple(
+            ConsolidatedReference(
+                reference=f"https://example.com/reference/{index}",
+                supporting_chunk_ids=(chunk_id,),
+            )
+            for index, chunk_id in enumerate(chunk_ids, start=1)
+        ),
+    )
+    enhanced = EnhancedResearchReport(
+        base_report=_report(),
+        executive_summary="Display context only.",
+        findings=(),
+        sections=(),
+        synthesis_metadata=SynthesisMetadata(
+            provider="groq",
+            model="test-model",
+            elapsed_ms=0.0,
+            successful=True,
+            source_evidence=tuple(
+                SynthesisSourceEvidence(
+                    chunk_id=chunk_id,
+                    confidence=0.8,
+                    references=(f"https://example.com/reference/{index}",),
+                )
+                for index, chunk_id in enumerate(chunk_ids, start=1)
+            ),
+        ),
+        report_intelligence=intelligence,
+    )
+
+    context = EnhancedReportRenderContext.from_report(enhanced)
+    markdown = MarkdownRenderer().render_enhanced(enhanced)
+
+    assert len(enhanced.report_intelligence.entity_groups[0].entities) == 9
+    assert len(context.entity_groups[0].entities) == 8
+    assert tuple(entity.name for entity in context.entity_groups[0].entities) == tuple(
+        f"Technology {index}" for index in range(1, 9)
+    )
+    assert tuple(reference.reference for reference in context.references) == tuple(
+        f"https://example.com/reference/{index}" for index in range(1, 9)
+    )
+    assert "Technology 9" not in markdown
+    assert "https://example.com/reference/9" not in markdown
+
+
+def test_enhanced_presentation_groups_findings_and_calibrates_confidence() -> None:
+    """Grouping and calibration are transient views over immutable source data."""
+    first_chunk_id = uuid4()
+    second_chunk_id = uuid4()
+    base_report = _report(
+        findings=(
+            Finding(
+                title="PDF was introduced in 1993",
+                description="PDF was introduced in 1993 for document exchange.",
+                supporting_chunk_ids=(first_chunk_id,),
+            ),
+            Finding(
+                title="ISO standard defines PDF",
+                description="The ISO standard defines interoperable PDF behavior.",
+                supporting_chunk_ids=(second_chunk_id,),
+            ),
+        )
+    )
+    enhanced = EnhancedResearchReport(
+        base_report=base_report,
+        executive_summary="History and standards are described.",
+        findings=base_report.findings,
+        sections=(),
+        synthesis_metadata=SynthesisMetadata(
+            provider="groq",
+            model="test-model",
+            elapsed_ms=0.0,
+            successful=True,
+        ),
+        report_intelligence=ReportIntelligence(
+            findings=(
+                EnrichedFinding(
+                    source_kind="finding",
+                    source_index=0,
+                    title=base_report.findings[0].title,
+                    summary=base_report.findings[0].description,
+                    supporting_chunk_ids=(first_chunk_id,),
+                    references=(),
+                    confidence=0.65,
+                    importance="medium",
+                ),
+                EnrichedFinding(
+                    source_kind="finding",
+                    source_index=1,
+                    title=base_report.findings[1].title,
+                    summary=base_report.findings[1].description,
+                    supporting_chunk_ids=(second_chunk_id,),
+                    references=("https://example.com/standard",),
+                    confidence=0.95,
+                    importance="high",
+                ),
+            ),
+        ),
+    )
+
+    context = EnhancedReportRenderContext.from_report(enhanced)
+    markdown = MarkdownRenderer().render_enhanced(enhanced)
+    first_label = context.findings[0].confidence_label
+    second_label = context.findings[1].confidence_label
+
+    assert tuple(group.heading for group in context.finding_groups) == (
+        "History",
+        "Standards",
+    )
+    assert tuple(finding.title for finding in context.findings) == tuple(
+        finding.title for finding in enhanced.findings
+    )
+    assert not hasattr(enhanced.report_intelligence, "finding_groups")
+    assert enhanced.report_intelligence.findings[0].confidence == 0.65
+    assert enhanced.report_intelligence.findings[1].confidence == 0.95
+    assert first_label is not None and second_label is not None
+    assert 60 <= int(first_label.removesuffix("%")) <= 100
+    assert 60 <= int(second_label.removesuffix("%")) <= 100
+    assert int(first_label.removesuffix("%")) < int(second_label.removesuffix("%"))
+    assert "### History" in markdown
+    assert "### Standards" in markdown
+
+
+def test_enhanced_presentation_uses_evidence_richness_for_equal_confidence() -> None:
+    """Equal raw confidence is deterministically distinguished by provenance."""
+    first_chunk_id = uuid4()
+    second_chunk_id = uuid4()
+    base_report = _report(
+        findings=(
+            Finding(
+                title="Feature one",
+                description="The document describes a feature.",
+                supporting_chunk_ids=(first_chunk_id,),
+            ),
+            Finding(
+                title="Feature two",
+                description="The document describes another feature.",
+                supporting_chunk_ids=(first_chunk_id, second_chunk_id),
+            ),
+        )
+    )
+    enhanced = EnhancedResearchReport(
+        base_report=base_report,
+        executive_summary="Two features are described.",
+        findings=base_report.findings,
+        sections=(),
+        synthesis_metadata=SynthesisMetadata(
+            provider="groq",
+            model="test-model",
+            elapsed_ms=0.0,
+            successful=True,
+        ),
+        report_intelligence=ReportIntelligence(
+            findings=(
+                EnrichedFinding(
+                    source_kind="finding",
+                    source_index=0,
+                    title=base_report.findings[0].title,
+                    summary=base_report.findings[0].description,
+                    supporting_chunk_ids=(first_chunk_id,),
+                    references=(),
+                    confidence=0.8,
+                    importance="low",
+                ),
+                EnrichedFinding(
+                    source_kind="finding",
+                    source_index=1,
+                    title=base_report.findings[1].title,
+                    summary=base_report.findings[1].description,
+                    supporting_chunk_ids=(first_chunk_id, second_chunk_id),
+                    references=("https://example.com/evidence",),
+                    confidence=0.8,
+                    importance="medium",
+                ),
+            ),
+        ),
+    )
+
+    context = EnhancedReportRenderContext.from_report(enhanced)
+
+    weaker = context.findings[0].confidence_label
+    richer = context.findings[1].confidence_label
+    assert weaker is not None and richer is not None
+    assert int(weaker.removesuffix("%")) < int(richer.removesuffix("%"))
+    assert enhanced.report_intelligence.findings[0].confidence == 0.8
+    assert enhanced.report_intelligence.findings[1].confidence == 0.8

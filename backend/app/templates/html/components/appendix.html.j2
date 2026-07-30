@@ -1,6 +1,43 @@
     <section class="report-section" aria-labelledby="appendix-heading">
       <h2 id="appendix-heading">Appendix</h2>
 {% if render_context.appendix_findings %}
+{% if render_context.appendix_finding_groups %}
+{% for group in render_context.appendix_finding_groups %}
+      <div class="finding-group appendix-finding-group">
+        <h3 class="finding-group-heading">{{ group.heading }}</h3>
+      <ol class="findings-list appendix-findings">
+{% for finding in group.findings %}
+        <li class="finding">
+          <h4>{{ finding.title }}</h4>
+          <p>{{ finding.summary }}</p>
+{% if finding.importance_label or finding.confidence_label %}
+          <dl class="intelligence-metadata" aria-label="Finding evidence details">
+{% if finding.importance_label %}
+            <div class="importance-badge"><dt>Importance</dt><dd>{{ finding.importance_label }}</dd></div>
+{% endif %}
+{% if finding.confidence_label %}
+            <div><dt>Confidence</dt><dd>{{ finding.confidence_label }}</dd></div>
+{% endif %}
+            <div><dt>Evidence</dt><dd>{{ finding.source_count }} {{ "source" if finding.source_count == 1 else "sources" }}</dd></div>
+          </dl>
+{% else %}
+          <p class="evidence-count">Evidence: {{ finding.source_count }} {{ "source" if finding.source_count == 1 else "sources" }}</p>
+{% endif %}
+          <p class="provenance">
+            <span class="provenance-label">Supported by</span>
+{% for label in finding.source_labels %}
+            <span class="source-label">{{ label }}</span>{% if not loop.last %}, {% endif %}
+{% endfor %}
+          </p>
+{% if finding.references %}
+          <p class="inline-references"><span class="provenance-label">References</span> {{ finding.references | join("; ") }}</p>
+{% endif %}
+        </li>
+{% endfor %}
+      </ol>
+      </div>
+{% endfor %}
+{% else %}
       <ol class="findings-list appendix-findings">
 {% for finding in render_context.appendix_findings %}
         <li class="finding">
@@ -31,6 +68,7 @@
         </li>
 {% endfor %}
       </ol>
+{% endif %}
 {% else %}
       <p class="empty-state">No additional findings.</p>
 {% endif %}
