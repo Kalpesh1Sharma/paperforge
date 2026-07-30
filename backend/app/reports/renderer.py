@@ -3,6 +3,8 @@
 import math
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from app.reports.enhanced_models import (
     EnhancedResearchReport,
     SynthesisMetadata,
@@ -18,6 +20,13 @@ from app.reports.models import (
     ReportSection,
     ResearchReport,
     TimelineEvent,
+)
+from app.reports.presentation import (
+    EnhancedReportRenderContext,
+    RenderDefinition,
+    RenderFinding,
+    RenderReference,
+    RenderTimelineEvent,
 )
 
 
@@ -96,24 +105,244 @@ class MarkdownRenderer:
 
     @classmethod
     def _render_enhanced_report(cls, enhanced_report: EnhancedResearchReport) -> str:
-        """Compose a render-only report from deterministic and enhanced fields."""
-        base_report = enhanced_report.base_report
-        enhanced_sections = tuple(
-            ReportSection(heading=section.heading, content=section.content)
-            for section in enhanced_report.sections
+        """Render an enhancement overlay through one provider-agnostic context."""
+        context = EnhancedReportRenderContext.from_report(enhanced_report)
+        base_report = context.report.base_report
+        blocks = [
+            f"# {base_report.title}",
+            cls._text_block("Executive Summary", context.report.executive_summary),
+            cls._bullet_block(
+                "Key Findings",
+                cls._enhanced_finding_items(context.findings),
+            ),
+            cls._bullet_block(
+                "Important Entities",
+                cls._entity_items(context),
+            ),
+            cls._bullet_block(
+                "Definitions",
+                cls._definition_items(context.definitions),
+            ),
+            cls._bullet_block(
+                "Metrics",
+                tuple(f"- {metric}" for metric in context.metrics),
+            ),
+            cls._bullet_block(
+                "Timeline",
+                cls._timeline_items(context.timeline),
+            ),
+        ]
+        blocks.extend(
+            cls._text_block(
+                section.heading,
+                "{content}\n\n*Sources: {sources}*".format(
+                    content=section.content,
+                    sources=", ".join(section.source_labels),
+                ),
+            )
+            for section in context.sections
         )
-        render_only_report = ResearchReport(
-            title=base_report.title,
-            executive_summary=enhanced_report.executive_summary,
-            findings=enhanced_report.findings,
-            important_entities=base_report.important_entities,
-            important_definitions=base_report.important_definitions,
-            important_metrics=base_report.important_metrics,
-            timeline=base_report.timeline,
-            references=base_report.references,
-            sections=enhanced_sections,
+        blocks.append(cls._enhanced_reference_block(context.references))
+        blocks.append(
+            cls._bullet_block(
+                "Appendix",
+                cls._enhanced_finding_items(context.appendix_findings)
+                or ("No additional findings.",),
+            )
         )
-        return cls._render_report(render_only_report)
+        return "\n\n".join(block.rstrip("\n") for block in blocks) + "\n"
+
+    @staticmethod
+    def _enhanced_finding_items(
+        findings: tuple[RenderFinding, ...],
+    ) -> tuple[str, ...]:
+        """Format optional intelligence without exposing numeric scores or UUIDs."""
+        items: list[str] = []
+        for finding in findings:
+            details = [
+                "- **{title}**: {summary}{citation}".format(
+                    title=finding.title,
+                    summary=finding.summary,
+                    citation=MarkdownRenderer._source_suffix(
+                        finding.source_labels
+                    ),
+                )
+            ]
+            if finding.importance_label is not None:
+                details.append(f"  - Importance: {finding.importance_label}")
+            if finding.confidence_label is not None:
+                details.append(f"  - Confidence: {finding.confidence_label}")
+            details.append(
+                "  - Evidence: {count} {label}".format(
+                    count=finding.source_count,
+                    label="source" if finding.source_count == 1 else "sources",
+                )
+            )
+            if finding.references:
+                details.append(
+                    "  - References: " + "; ".join(finding.references)
+                )
+            items.append("\n".join(details))
+        return tuple(items)
+
+    @staticmethod
+    def _entity_items(
+        context: EnhancedReportRenderContext,
+    ) -> tuple[str, ...]:
+        """Render categorized entities, retaining plain deterministic fallback text."""
+        items: list[str] = []
+        for group in context.entity_groups:
+            if group.category is not None:
+                items.append(f"- **{group.category}**")
+            for entity in group.entities:
+                aliases = (
+                    f" (also known as: {', '.join(entity.aliases)})"
+                    if entity.aliases
+                    else ""
+                )
+                item = "{name}{aliases}{citation}".format(
+                    name=entity.name,
+                    aliases=aliases,
+                    citation=MarkdownRenderer._source_suffix(
+                        entity.source_labels
+                    ),
+                )
+                items.append(f"  - {item}" if group.category is not None else f"- {item}")
+        return tuple(items)
+
+    @staticmethod
+    def _definition_items(
+        definitions: tuple[RenderDefinition, ...],
+    ) -> tuple[str, ...]:
+        """Render definitions with optional confidence and evidence information."""
+        items: list[str] = []
+        for definition in definitions:
+            is_plain_fallback = (
+                definition.concept == definition.definition
+                and not definition.related_concepts
+                and definition.confidence_label is None
+                and definition.source_count == 0
+            )
+            if is_plain_fallback:
+                items.append(f"- {definition.definition}")
+                continue
+
+            details = [
+                "- **{concept}**: {definition}{citation}".format(
+                    concept=definition.concept,
+                    definition=definition.definition,
+                    citation=MarkdownRenderer._source_suffix(
+                        definition.source_labels
+                    ),
+                )
+            ]
+            if definition.related_concepts:
+                details.append(
+                    "  - Related concepts: "
+                    + ", ".join(definition.related_concepts)
+                )
+            if definition.confidence_label is not None:
+                details.append(
+                    f"  - Confidence: {definition.confidence_label}"
+                )
+            details.append(
+                "  - Evidence: {count} {label}".format(
+                    count=definition.source_count,
+                    label="source" if definition.source_count == 1 else "sources",
+                )
+            )
+            if definition.references:
+                details.append(
+                    "  - References: " + "; ".join(definition.references)
+                )
+            items.append("\n".join(details))
+        return tuple(items)
+
+    @staticmethod
+    def _timeline_items(
+        timeline: tuple[RenderTimelineEvent, ...],
+    ) -> tuple[str, ...]:
+        """Render timeline events with optional confidence and evidence details."""
+        items: list[str] = []
+        for event in timeline:
+            details = [
+                "- **{date}**: {description}{citation}".format(
+                    date=event.date,
+                    description=event.description,
+                    citation=MarkdownRenderer._source_suffix(event.source_labels),
+                )
+            ]
+            if event.confidence_label is not None:
+                details.append(f"  - Confidence: {event.confidence_label}")
+            details.append(
+                "  - Evidence: {count} {label}".format(
+                    count=event.source_count,
+                    label="source" if event.source_count == 1 else "sources",
+                )
+            )
+            if event.references:
+                details.append("  - References: " + "; ".join(event.references))
+            items.append("\n".join(details))
+        return tuple(items)
+
+    @staticmethod
+    def _enhanced_reference_block(
+        references: tuple[RenderReference, ...],
+    ) -> str:
+        """Render consolidated references with human source labels only."""
+        if not references:
+            return "## References"
+
+        if all(not reference.consolidated for reference in references):
+            return MarkdownRenderer._legacy_reference_block(references)
+
+        items: list[str] = []
+        for reference in references:
+            labels = ", ".join(reference.source_labels)
+            if reference.reference is None:
+                items.append(f"- **{labels}**")
+            else:
+                items.append(
+                    "- {reference} [{labels}]".format(
+                        reference=reference.reference,
+                        labels=labels,
+                    )
+                )
+        return "## References\n\n" + "\n".join(items)
+
+    @staticmethod
+    def _legacy_reference_block(
+        references: tuple[RenderReference, ...],
+    ) -> str:
+        """Preserve legacy source-entry layout when no consolidation is available."""
+        grouped: dict[tuple[str, ...], list[str]] = {}
+        for reference in references:
+            values = grouped.setdefault(reference.source_labels, [])
+            if reference.reference is not None:
+                values.append(reference.reference)
+
+        items: list[str] = []
+        for labels, values in grouped.items():
+            source_label = ", ".join(labels)
+            if values:
+                items.append(
+                    "- **{label}**\n{references}".format(
+                        label=source_label,
+                        references="\n".join(
+                            f"  - {reference}" for reference in values
+                        ),
+                    )
+                )
+            else:
+                items.append(f"- **{source_label}**")
+        return "## References\n\n" + "\n".join(items)
+
+    @staticmethod
+    def _source_suffix(source_labels: tuple[str, ...]) -> str:
+        """Return a display-safe source suffix without exposing chunk UUIDs."""
+        if not source_labels:
+            return ""
+        return f" [{', '.join(source_labels)}]"
 
     @staticmethod
     def _text_block(heading: str, content: str) -> str:
@@ -182,9 +411,22 @@ class MarkdownRenderer:
             )
 
         try:
+            payload = enhanced_report.model_dump(mode="python", warnings="error")
+            EnhancedResearchReport.model_validate(payload)
+        except (AttributeError, TypeError, ValidationError, ValueError) as exc:
+            raise InvalidResearchReportError(
+                "EnhancedResearchReport failed structural validation."
+            ) from exc
+        except Exception as exc:
+            raise InvalidResearchReportError(
+                "EnhancedResearchReport could not be validated safely."
+            ) from exc
+
+        try:
             base_report = enhanced_report.base_report
             executive_summary = enhanced_report.executive_summary
             findings = enhanced_report.findings
+            appendix_findings = enhanced_report.appendix_findings
             sections = enhanced_report.sections
             synthesis_metadata = enhanced_report.synthesis_metadata
         except AttributeError as exc:
@@ -196,6 +438,7 @@ class MarkdownRenderer:
             cls._validate_base_report(base_report)
             cls._validate_enhanced_summary(executive_summary)
             cls._validate_enhanced_findings(findings)
+            cls._validate_enhanced_findings(appendix_findings)
             cls._validate_synthesized_sections(sections)
             cls._validate_synthesis_metadata(synthesis_metadata)
         except InvalidResearchReportError:

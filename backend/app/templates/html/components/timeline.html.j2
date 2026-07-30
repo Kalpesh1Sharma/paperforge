@@ -1,17 +1,28 @@
     <section class="report-section" aria-labelledby="timeline-heading">
       <h2 id="timeline-heading">Timeline</h2>
-{% if base_report.timeline %}
+{% if render_context.timeline %}
       <ol class="timeline-list">
-{% for event in base_report.timeline %}
+{% for event in render_context.timeline %}
         <li class="timeline-event">
           <p class="timeline-date">{{ event.date }}</p>
           <p>{{ event.description }}</p>
+{% if event.confidence_label %}
+          <dl class="intelligence-metadata" aria-label="Timeline evidence details">
+            <div><dt>Confidence</dt><dd>{{ event.confidence_label }}</dd></div>
+            <div><dt>Evidence</dt><dd>{{ event.source_count }} {{ "source" if event.source_count == 1 else "sources" }}</dd></div>
+          </dl>
+{% else %}
+          <p class="evidence-count">Evidence: {{ event.source_count }} {{ "source" if event.source_count == 1 else "sources" }}</p>
+{% endif %}
           <p class="provenance">
             <span class="provenance-label">Supported by</span>
-{% for chunk_id in event.supporting_chunk_ids %}
-            <code>{{ chunk_id }}</code>{% if not loop.last %}, {% endif %}
+{% for label in event.source_labels %}
+            <span class="source-label">{{ label }}</span>{% if not loop.last %}, {% endif %}
 {% endfor %}
           </p>
+{% if event.references %}
+          <p class="inline-references"><span class="provenance-label">References</span> {{ event.references | join("; ") }}</p>
+{% endif %}
         </li>
 {% endfor %}
       </ol>

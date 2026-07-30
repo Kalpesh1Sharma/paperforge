@@ -1,9 +1,10 @@
-"""Groq-backed, immutable enhancements for deterministic research reports."""
+"""Groq-backed, immutable refinements for deterministic research reports."""
 
 import json
 import logging
 import math
 import re
+from collections.abc import Mapping
 from time import perf_counter
 from uuid import UUID
 
@@ -29,12 +30,17 @@ from app.knowledge.models import KnowledgeObject
 from app.reports.enhanced_models import (
     EnhancedResearchReport,
     SynthesisMetadata,
-    SynthesisSourceEvidence,
     SynthesizedSection,
 )
 from app.reports.exceptions import ReportSynthesisError
-from app.reports.models import Finding, ResearchReport
+from app.reports.models import ResearchReport
 from app.reports.prompts import DOCUMENT_SYNTHESIS_PROMPT
+from app.reports.refinement import (
+    CandidateRewrite,
+    InvalidRefinementRewriteError,
+    RefinementPlan,
+    ReportRefiner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,27 +56,28 @@ _PARAGRAPH_SEPARATOR = re.compile(r"\r?\n[ \t]*(?:\r?\n)+")
 
 
 class _RecoverableSynthesisResponseError(ReportSynthesisError):
-    """A provider response failure that may use deterministic fallback output."""
+    """A model-response failure that may use deterministic fallback output."""
 
     def __init__(self, message: str, reason: str) -> None:
-        """Store a normalized, safe reason for the fallback telemetry."""
+        """Store a normalized, safe reason for fallback telemetry."""
         super().__init__(message)
         self.reason = reason
 
 
-class _SynthesisFindingResponse(BaseModel):
-    """Strict private schema for a Groq-generated finding."""
+class _SynthesisFindingRewriteResponse(BaseModel):
+    """Strict private schema for one canonical-candidate rewrite."""
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
+    candidate_id: str = Field(min_length=1)
     title: str = Field(min_length=1)
     description: str = Field(min_length=1)
     supporting_chunk_ids: tuple[UUID, ...] = Field(min_length=1)
 
-    @field_validator("title", "description")
+    @field_validator("candidate_id", "title", "description")
     @classmethod
     def validate_non_blank_text(cls, value: str) -> str:
-        """Reject whitespace-only generated content without normalizing it."""
+        """Reject whitespace-only model output without normalizing it."""
         if not value.strip():
             raise ValueError("Generated text must not be blank.")
         return value
@@ -95,13 +102,15 @@ class _SynthesisSectionResponse(BaseModel):
 
 
 class _DocumentSynthesisResponse(BaseModel):
-    """Strict private response contract for document-level synthesis."""
+    """Strict private response contract for document-level refinement."""
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
     executive_summary: str = Field(min_length=1)
-    findings: tuple[_SynthesisFindingResponse, ...]
-    sections: tuple[_SynthesisSectionResponse, ...]
+    finding_rewrites: tuple[_SynthesisFindingRewriteResponse, ...] = Field(
+        default_factory=tuple
+    )
+    sections: tuple[_SynthesisSectionResponse, ...] = Field(default_factory=tuple)
 
     @field_validator("executive_summary")
     @classmethod
@@ -123,18 +132,19 @@ class _DocumentSynthesisResponse(BaseModel):
 
 
 class DocumentSynthesizer:
-    """Enhance one deterministic report through a single Groq completion."""
+    """Refine one deterministic report through a single Groq completion."""
 
     def synthesize(
         self,
         report: ResearchReport,
         knowledge_objects: tuple[KnowledgeObject, ...],
     ) -> EnhancedResearchReport:
-        """Return an AI overlay or deterministic fallback for valid inputs.
+        """Return a refined AI overlay or deterministic refined fallback.
 
-        Caller-provided models are validated before constructing a provider client.
-        Only transient provider failures and unusable model responses fall back; all
-        configuration, authorization, input, and programming failures surface.
+        Input validation and deterministic refinement happen before creating a
+        provider client. Only explicitly transient provider failures and invalid
+        model responses use fallback output; configuration, authorization, input,
+        and programming failures intentionally surface to the caller.
         """
         started_at = perf_counter()
         model = self._configured_model_name()
@@ -142,8 +152,10 @@ class DocumentSynthesizer:
 
         self._validate_report(report)
         self._validate_knowledge_objects(knowledge_objects)
+        self._validate_base_provenance(report, knowledge_objects)
+        refinement_plan = ReportRefiner.build_plan(report, knowledge_objects)
         api_key, model = self._configuration()
-        payload = self._request_payload(report, knowledge_objects)
+        payload = self._request_payload(report, knowledge_objects, refinement_plan)
 
         try:
             client = Groq(api_key=api_key, max_retries=0)
@@ -164,9 +176,10 @@ class DocumentSynthesizer:
                 response_format={"type": "json_object"},
             )
             response = self._parse_response(self._completion_content(completion))
-            self._validate_provenance(response, knowledge_objects)
+            self._validate_section_provenance(response, knowledge_objects)
             enhanced_report = self._enhanced_report(
                 report,
+                refinement_plan,
                 response,
                 model,
                 started_at,
@@ -174,7 +187,7 @@ class DocumentSynthesizer:
         except _RecoverableSynthesisResponseError as exc:
             return self._fallback_report(
                 report,
-                knowledge_objects,
+                refinement_plan,
                 started_at,
                 reason=exc.reason,
                 message=str(exc),
@@ -182,7 +195,7 @@ class DocumentSynthesizer:
         except RateLimitError:
             return self._fallback_report(
                 report,
-                knowledge_objects,
+                refinement_plan,
                 started_at,
                 reason="rate_limit",
                 message="Groq document synthesis was rate limited.",
@@ -190,7 +203,7 @@ class DocumentSynthesizer:
         except APITimeoutError:
             return self._fallback_report(
                 report,
-                knowledge_objects,
+                refinement_plan,
                 started_at,
                 reason="timeout",
                 message="Groq document synthesis timed out.",
@@ -203,19 +216,29 @@ class DocumentSynthesizer:
         except APIConnectionError:
             return self._fallback_report(
                 report,
-                knowledge_objects,
+                refinement_plan,
                 started_at,
                 reason="connection",
                 message="Groq document synthesis service was unreachable.",
             )
         except APIStatusError as exc:
+            if self._is_rate_limit_status_error(exc):
+                return self._fallback_report(
+                    report,
+                    refinement_plan,
+                    started_at,
+                    reason="rate_limit",
+                    message="Groq document synthesis was rate limited.",
+                )
             if self._is_server_error(exc):
                 return self._fallback_report(
                     report,
-                    knowledge_objects,
+                    refinement_plan,
                     started_at,
                     reason="api_status",
-                    message="Groq document synthesis service returned a server error.",
+                    message=(
+                        "Groq document synthesis service returned a server error."
+                    ),
                 )
 
             self._log_failure(model, object_count, started_at)
@@ -242,7 +265,7 @@ class DocumentSynthesizer:
 
     @staticmethod
     def _configuration() -> tuple[str, str]:
-        """Return configured Groq credentials without storing them on the instance."""
+        """Return configured Groq credentials without retaining instance state."""
         api_key = settings.groq_api_key
         if not isinstance(api_key, str) or not api_key.strip():
             raise ReportSynthesisError("GROQ_API_KEY must be configured.")
@@ -277,6 +300,31 @@ class DocumentSynthesizer:
             and isinstance(status_code, int)
             and 500 <= status_code <= 599
         )
+
+    @staticmethod
+    def _is_rate_limit_status_error(error: APIStatusError) -> bool:
+        """Recognize Groq rate limits that arrive through generic status errors.
+
+        Groq can surface token-per-minute exhaustion as HTTP 413 with a
+        ``rate_limit_exceeded`` body, rather than as the SDK's 429-specific
+        ``RateLimitError``. Restrict the fallback to explicit rate-limit signals
+        so unrelated client-side status errors still surface to callers.
+        """
+        if getattr(error, "status_code", None) == 429:
+            return True
+
+        body = getattr(error, "body", None)
+        if isinstance(body, Mapping):
+            details = body.get("error", body)
+            if isinstance(details, Mapping):
+                code = details.get("code")
+                if isinstance(code, str) and code.casefold() in {
+                    "rate_limit",
+                    "rate_limit_exceeded",
+                }:
+                    return True
+
+        return "rate_limit_exceeded" in str(error).casefold()
 
     @classmethod
     def _validate_report(cls, report: object) -> None:
@@ -365,15 +413,59 @@ class DocumentSynthesizer:
             )
 
     @staticmethod
+    def _validate_base_provenance(
+        report: ResearchReport,
+        knowledge_objects: tuple[KnowledgeObject, ...],
+    ) -> None:
+        """Require deterministic claim provenance to be present in the sources.
+
+        The base report is canonical, but its claim-bearing findings and timeline
+        entries must still be source-addressable before they can be refined or
+        rendered with human-readable citations.
+        """
+        known_chunk_ids = {
+            knowledge_object.chunk_id for knowledge_object in knowledge_objects
+        }
+        for statements, statement_name in (
+            (report.findings, "finding"),
+            (report.timeline, "timeline event"),
+        ):
+            for statement in statements:
+                supporting_chunk_ids = statement.supporting_chunk_ids
+                if not supporting_chunk_ids:
+                    raise ReportSynthesisError(
+                        f"ResearchReport {statement_name} must include source "
+                        "provenance."
+                    )
+                if not set(supporting_chunk_ids).issubset(known_chunk_ids):
+                    raise ReportSynthesisError(
+                        f"ResearchReport {statement_name} provenance must reference "
+                        "supplied knowledge objects."
+                    )
+
+    @staticmethod
     def _request_payload(
         report: ResearchReport,
         knowledge_objects: tuple[KnowledgeObject, ...],
+        refinement_plan: RefinementPlan,
     ) -> str:
-        """Serialize immutable inputs into one deterministic JSON request payload."""
+        """Serialize immutable inputs and canonical candidates into one request."""
         payload = {
             "knowledge_objects": [
                 knowledge_object.model_dump(mode="json", warnings="error")
                 for knowledge_object in knowledge_objects
+            ],
+            "refinement_candidates": [
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "title": candidate.finding.title,
+                    "description": candidate.finding.description,
+                    "supporting_chunk_ids": [
+                        str(chunk_id)
+                        for chunk_id in candidate.finding.supporting_chunk_ids
+                    ],
+                }
+                for candidate in refinement_plan.candidates
             ],
             "report": report.model_dump(mode="json", warnings="error"),
         }
@@ -405,7 +497,7 @@ class DocumentSynthesizer:
 
     @staticmethod
     def _parse_response(content: str) -> _DocumentSynthesisResponse:
-        """Parse the JSON-only response through the strict private schema."""
+        """Parse JSON-only model output through the strict private schema."""
         try:
             json.loads(content)
         except json.JSONDecodeError as exc:
@@ -417,39 +509,36 @@ class DocumentSynthesizer:
         try:
             return _DocumentSynthesisResponse.model_validate_json(content)
         except ValidationError as exc:
-            error_locations = tuple(
-                error.get("loc", ()) for error in exc.errors()
-            )
+            error_locations = tuple(error.get("loc", ()) for error in exc.errors())
             if any("executive_summary" in location for location in error_locations):
                 raise _RecoverableSynthesisResponseError(
                     "Groq response failed executive summary paragraph requirements.",
                     "validation_failure",
                 ) from exc
             if any(
-                "supporting_chunk_ids" in location
-                for location in error_locations
+                "supporting_chunk_ids" in location for location in error_locations
             ):
                 raise _RecoverableSynthesisResponseError(
                     "Groq response failed source provenance requirements.",
                     "validation_failure",
                 ) from exc
             raise _RecoverableSynthesisResponseError(
-                "Groq response did not match the document synthesis schema.",
+                "Groq response did not match the document refinement schema.",
                 "validation_failure",
             ) from exc
 
     @staticmethod
-    def _validate_provenance(
+    def _validate_section_provenance(
         response: _DocumentSynthesisResponse,
         knowledge_objects: tuple[KnowledgeObject, ...],
     ) -> None:
-        """Require every enhancement to cite non-empty, supplied source UUIDs."""
+        """Require every generated section to cite supplied source UUIDs."""
         source_chunk_ids = {
             knowledge_object.chunk_id for knowledge_object in knowledge_objects
         }
 
-        for item in (*response.findings, *response.sections):
-            supporting_chunk_ids = item.supporting_chunk_ids
+        for section in response.sections:
+            supporting_chunk_ids = section.supporting_chunk_ids
             if not supporting_chunk_ids:
                 raise _RecoverableSynthesisResponseError(
                     "Synthesized content must include source chunk provenance.",
@@ -463,25 +552,54 @@ class DocumentSynthesizer:
                 )
 
     @staticmethod
+    def _candidate_rewrites(
+        response: _DocumentSynthesisResponse,
+    ) -> tuple[CandidateRewrite, ...]:
+        """Convert validated model rewrites to the refiner's immutable contract."""
+        try:
+            return tuple(
+                CandidateRewrite(
+                    candidate_id=rewrite.candidate_id,
+                    title=rewrite.title,
+                    description=rewrite.description,
+                    supporting_chunk_ids=rewrite.supporting_chunk_ids,
+                )
+                for rewrite in response.finding_rewrites
+            )
+        except (ValidationError, ValueError) as exc:
+            raise _RecoverableSynthesisResponseError(
+                "Groq response contained an invalid finding rewrite.",
+                "validation_failure",
+            ) from exc
+
+    @classmethod
     def _enhanced_report(
+        cls,
         report: ResearchReport,
+        refinement_plan: RefinementPlan,
         response: _DocumentSynthesisResponse,
         model: str,
         started_at: float,
     ) -> EnhancedResearchReport:
-        """Construct a new immutable overlay while retaining the exact base object."""
+        """Build a new overlay while retaining canonical candidate membership."""
+        rewrites = cls._candidate_rewrites(response)
+        try:
+            findings, appendix_findings = ReportRefiner.apply_rewrites(
+                refinement_plan,
+                rewrites,
+            )
+        except InvalidRefinementRewriteError as exc:
+            raise _RecoverableSynthesisResponseError(
+                "Groq response attempted an invalid canonical finding rewrite.",
+                "validation_failure",
+            ) from exc
+
         try:
             enhanced_report = EnhancedResearchReport(
                 base_report=report,
                 executive_summary=response.executive_summary,
-                findings=tuple(
-                    Finding(
-                        title=finding.title,
-                        description=finding.description,
-                        supporting_chunk_ids=finding.supporting_chunk_ids,
-                    )
-                    for finding in response.findings
-                ),
+                findings=findings,
+                appendix_findings=appendix_findings,
                 sections=tuple(
                     SynthesizedSection(
                         heading=section.heading,
@@ -495,6 +613,7 @@ class DocumentSynthesizer:
                     model=model,
                     elapsed_ms=(perf_counter() - started_at) * 1000,
                     successful=True,
+                    source_evidence=refinement_plan.source_evidence,
                 ),
             )
         except ValidationError as exc:
@@ -512,16 +631,16 @@ class DocumentSynthesizer:
     @staticmethod
     def _fallback_report(
         report: ResearchReport,
-        knowledge_objects: tuple[KnowledgeObject, ...],
+        refinement_plan: RefinementPlan,
         started_at: float,
         *,
         reason: str,
         message: str,
     ) -> EnhancedResearchReport:
-        """Build and log one deterministic fallback for a recoverable failure."""
+        """Build and log one deterministic refined fallback after a safe failure."""
         fallback_report = DocumentSynthesizer._build_fallback_report(
             report,
-            knowledge_objects,
+            refinement_plan,
             started_at,
             reason,
         )
@@ -531,16 +650,17 @@ class DocumentSynthesizer:
     @staticmethod
     def _build_fallback_report(
         report: ResearchReport,
-        knowledge_objects: tuple[KnowledgeObject, ...],
+        refinement_plan: RefinementPlan,
         started_at: float,
         reason: str,
     ) -> EnhancedResearchReport:
-        """Create deterministic, source-preserving output without an AI request."""
+        """Create deterministic, refined output without an AI completion."""
         try:
             fallback_report = EnhancedResearchReport(
                 base_report=report,
-                executive_summary=report.executive_summary,
-                findings=report.findings,
+                executive_summary=refinement_plan.executive_summary,
+                findings=refinement_plan.findings,
+                appendix_findings=refinement_plan.appendix_findings,
                 sections=(),
                 synthesis_metadata=SynthesisMetadata(
                     provider="fallback",
@@ -550,14 +670,7 @@ class DocumentSynthesizer:
                     enhanced=False,
                     fallback=True,
                     reason=reason,
-                    source_evidence=tuple(
-                        SynthesisSourceEvidence(
-                            chunk_id=knowledge_object.chunk_id,
-                            confidence=knowledge_object.confidence,
-                            references=knowledge_object.references,
-                        )
-                        for knowledge_object in knowledge_objects
-                    ),
+                    source_evidence=refinement_plan.source_evidence,
                 ),
             )
         except ValidationError as exc:

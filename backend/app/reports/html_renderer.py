@@ -10,6 +10,7 @@ from app.reports.exceptions import (
     ReportRenderingError,
 )
 from app.reports.template_loader import get_html_template, load_html_asset
+from app.reports.presentation import EnhancedReportRenderContext
 
 _SUMMARY_PARAGRAPH_SEPARATOR = re.compile(r"\r?\n[ \t]*(?:\r?\n)+")
 _EMPTY_STATE = "No information was extracted for this section."
@@ -23,9 +24,11 @@ class HTMLRenderer:
         self._validate_report(report)
 
         try:
+            render_context = EnhancedReportRenderContext.from_report(report)
             rendered_html = get_html_template("report.html.j2").render(
                 report=report,
                 base_report=report.base_report,
+                render_context=render_context,
                 summary_paragraphs=self._summary_paragraphs(
                     report.executive_summary
                 ),

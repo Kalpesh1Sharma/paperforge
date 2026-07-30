@@ -13,6 +13,7 @@ from app.parsers import ParserFactory
 from app.reports import (
     DocumentSynthesizer,
     MarkdownRenderer,
+    ReportIntelligenceBuilder,
     ResearchSynthesizer,
 )
 
@@ -25,6 +26,10 @@ def main() -> None:
     knowledge_objects = tuple(extractor.extract(chunk) for chunk in chunks)
     report = ResearchSynthesizer().synthesize(knowledge_objects)
     enhanced_report = DocumentSynthesizer().synthesize(report, knowledge_objects)
+    enhanced_report = ReportIntelligenceBuilder().build(
+        enhanced_report,
+        knowledge_objects,
+    )
     markdown = MarkdownRenderer().render_enhanced(enhanced_report)
     print(markdown, end="")
 

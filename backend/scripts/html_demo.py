@@ -10,7 +10,12 @@ sys.stdout.reconfigure(encoding="utf-8")
 from app.chunking import DocumentChunker
 from app.knowledge import GroqKnowledgeProvider, KnowledgeExtractor
 from app.parsers import ParserFactory
-from app.reports import DocumentSynthesizer, HTMLRenderer, ResearchSynthesizer
+from app.reports import (
+    DocumentSynthesizer,
+    HTMLRenderer,
+    ReportIntelligenceBuilder,
+    ResearchSynthesizer,
+)
 
 OUTPUT_PATH = PROJECT_ROOT / "outputs" / "report.html"
 
@@ -23,6 +28,10 @@ def main() -> None:
     knowledge_objects = tuple(extractor.extract(chunk) for chunk in chunks)
     report = ResearchSynthesizer().synthesize(knowledge_objects)
     enhanced_report = DocumentSynthesizer().synthesize(report, knowledge_objects)
+    enhanced_report = ReportIntelligenceBuilder().build(
+        enhanced_report,
+        knowledge_objects,
+    )
     html = HTMLRenderer().render(enhanced_report)
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)

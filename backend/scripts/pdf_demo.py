@@ -14,6 +14,7 @@ from app.reports import (
     DocumentSynthesizer,
     HTMLRenderer,
     PDFRenderer,
+    ReportIntelligenceBuilder,
     ResearchSynthesizer,
 )
 
@@ -29,6 +30,10 @@ def main() -> None:
     knowledge_objects = tuple(extractor.extract(chunk) for chunk in chunks)
     report = ResearchSynthesizer().synthesize(knowledge_objects)
     enhanced_report = DocumentSynthesizer().synthesize(report, knowledge_objects)
+    enhanced_report = ReportIntelligenceBuilder().build(
+        enhanced_report,
+        knowledge_objects,
+    )
 
     html = HTMLRenderer().render(enhanced_report)
     HTML_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)

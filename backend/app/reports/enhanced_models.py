@@ -13,6 +13,7 @@ from pydantic import (
 )
 
 from app.reports.models import Finding, ResearchReport
+from app.reports.intelligence import ReportIntelligence
 
 _NORMALIZED_REASON_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
 
@@ -136,8 +137,10 @@ class EnhancedResearchReport(BaseModel):
     base_report: ResearchReport
     executive_summary: str = Field(min_length=1)
     findings: tuple[Finding, ...] = Field(default_factory=tuple)
+    appendix_findings: tuple[Finding, ...] = Field(default_factory=tuple)
     sections: tuple[SynthesizedSection, ...] = Field(default_factory=tuple)
     synthesis_metadata: SynthesisMetadata
+    report_intelligence: ReportIntelligence | None = None
 
     @model_validator(mode="after")
     def validate_enhancement_content(self) -> "EnhancedResearchReport":
@@ -145,7 +148,7 @@ class EnhancedResearchReport(BaseModel):
         if not self.executive_summary.strip():
             raise ValueError("Enhanced executive_summary must not be blank.")
 
-        for finding in self.findings:
+        for finding in (*self.findings, *self.appendix_findings):
             if not finding.supporting_chunk_ids:
                 raise ValueError(
                     "EnhancedResearchReport findings require source provenance."

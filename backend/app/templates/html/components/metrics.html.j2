@@ -1,8 +1,8 @@
     <section class="report-section" aria-labelledby="metrics-heading">
       <h2 id="metrics-heading">Metrics</h2>
-{% if base_report.important_metrics %}
+{% if render_context.metrics %}
       <ul class="metric-list" role="list">
-{% for metric in base_report.important_metrics %}
+{% for metric in render_context.metrics %}
         <li>{{ metric }}</li>
 {% endfor %}
       </ul>

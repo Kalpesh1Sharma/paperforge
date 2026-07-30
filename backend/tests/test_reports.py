@@ -7,7 +7,12 @@ from pydantic import ValidationError
 
 from app.knowledge import KnowledgeObject
 from app.reports import (
+    ConsolidatedDefinition,
+    ConsolidatedReference,
     EnhancedResearchReport,
+    EnrichedFinding,
+    EntityGroup,
+    IntelligentTimelineEvent,
     Finding,
     InvalidResearchReportError,
     MarkdownRenderer,
@@ -16,6 +21,8 @@ from app.reports import (
     ReportSynthesisError,
     ResearchReport,
     ResearchSynthesizer,
+    ReportIntelligence,
+    NormalizedEntity,
     SynthesisSourceEvidence,
     SynthesizedSection,
     SynthesisMetadata,
@@ -392,8 +399,12 @@ def test_renderer_renders_enhanced_overlay_without_changing_base_rendering() -> 
     assert "Evidence means support." in enhanced_markdown
     assert "95%" in enhanced_markdown
     assert "https://example.com" in enhanced_markdown
+    assert "[Source 1]" in enhanced_markdown
+    assert str(chunk_id) not in enhanced_markdown
     assert "## Professional Experience" in enhanced_markdown
     assert "Enhanced grounded section." in enhanced_markdown
+    assert "## Appendix" in enhanced_markdown
+    assert "No additional findings." in enhanced_markdown
 
 
 def test_enhanced_renderer_accepts_a_nonblank_fallback_summary() -> None:
@@ -435,3 +446,141 @@ def test_enhanced_renderer_accepts_a_nonblank_fallback_summary() -> None:
 
     assert "Deterministic fallback summary." in markdown
     assert "Deterministic source fact." in markdown
+    assert "[Source 1]" in markdown
+    assert str(chunk_id) not in markdown
+
+
+def test_enhanced_renderer_uses_optional_intelligence_without_scores() -> None:
+    """Markdown maps enriched details by canonical position and hides raw IDs."""
+    first_chunk_id = uuid4()
+    second_chunk_id = uuid4()
+    base_report = _report(
+        findings=(
+            Finding(
+                title="Deterministic finding",
+                description="The source records a latency improvement.",
+                supporting_chunk_ids=(first_chunk_id, second_chunk_id),
+            ),
+        ),
+        important_entities=("PaperForge",),
+        important_definitions=("Latency means response delay.",),
+        important_metrics=("30%",),
+        timeline=(
+            TimelineEvent(
+                date="2026-07-29",
+                description="A latency improvement was reported.",
+                supporting_chunk_ids=(first_chunk_id,),
+            ),
+        ),
+        references=("https://example.com/base",),
+    )
+    enhanced = EnhancedResearchReport(
+        base_report=base_report,
+        executive_summary="Refined summary.",
+        findings=base_report.findings,
+        appendix_findings=(
+            Finding(
+                title="Appendix source finding",
+                description="A supporting implementation detail.",
+                supporting_chunk_ids=(second_chunk_id,),
+            ),
+        ),
+        sections=(),
+        synthesis_metadata=SynthesisMetadata(
+            provider="groq",
+            model="test-model",
+            elapsed_ms=0.0,
+            successful=True,
+            source_evidence=(
+                SynthesisSourceEvidence(
+                    chunk_id=first_chunk_id,
+                    confidence=0.9,
+                    references=("https://example.com/first",),
+                ),
+                SynthesisSourceEvidence(
+                    chunk_id=second_chunk_id,
+                    confidence=0.8,
+                    references=("https://example.com/second",),
+                ),
+            ),
+        ),
+        report_intelligence=ReportIntelligence(
+            entity_groups=(
+                EntityGroup(
+                    category="Organizations",
+                    entities=(
+                        NormalizedEntity(
+                            name="PaperForge",
+                            aliases=("PF",),
+                            supporting_chunk_ids=(first_chunk_id,),
+                            references=("https://example.com/first",),
+                            confidence=0.9,
+                        ),
+                    ),
+                ),
+            ),
+            definitions=(
+                ConsolidatedDefinition(
+                    concept="Latency",
+                    definition="Latency is the time before a response.",
+                    related_concepts=("Performance",),
+                    supporting_chunk_ids=(first_chunk_id,),
+                    references=("https://example.com/first",),
+                    confidence=0.84,
+                ),
+            ),
+            timeline=(
+                IntelligentTimelineEvent(
+                    date="2026-07-29",
+                    description="The document reports a latency improvement.",
+                    supporting_chunk_ids=(first_chunk_id,),
+                    references=("https://example.com/first",),
+                    confidence=0.84,
+                ),
+            ),
+            findings=(
+                EnrichedFinding(
+                    source_kind="finding",
+                    source_index=0,
+                    title="Performance improvement",
+                    summary="The document reports a measured latency improvement.",
+                    supporting_chunk_ids=(first_chunk_id, second_chunk_id),
+                    references=("https://example.com/first",),
+                    confidence=0.92,
+                    importance="high",
+                ),
+                EnrichedFinding(
+                    source_kind="appendix",
+                    source_index=0,
+                    title="Implementation context",
+                    summary="The document includes a supporting implementation detail.",
+                    supporting_chunk_ids=(second_chunk_id,),
+                    references=("https://example.com/second",),
+                    confidence=0.71,
+                    importance="low",
+                ),
+            ),
+            references=(
+                ConsolidatedReference(
+                    reference="https://example.com/consolidated",
+                    supporting_chunk_ids=(first_chunk_id, second_chunk_id),
+                ),
+            ),
+        ),
+    )
+
+    markdown = MarkdownRenderer().render_enhanced(enhanced)
+
+    assert "Performance improvement" in markdown
+    assert "Implementation context" in markdown
+    assert "Importance: HIGH" in markdown
+    assert "Importance: LOW" in markdown
+    assert "Confidence: 92%" in markdown
+    assert "Evidence: 2 sources" in markdown
+    assert "Organizations" in markdown
+    assert "also known as: PF" in markdown
+    assert "Related concepts: Performance" in markdown
+    assert "https://example.com/consolidated [Source 1, Source 2]" in markdown
+    assert "score" not in markdown.lower()
+    assert str(first_chunk_id) not in markdown
+    assert str(second_chunk_id) not in markdown

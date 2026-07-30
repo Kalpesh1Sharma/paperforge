@@ -1,9 +1,16 @@
     <section class="report-section" aria-labelledby="references-heading">
       <h2 id="references-heading">References</h2>
-{% if base_report.references %}
+{% if render_context.references %}
       <ol class="reference-list">
-{% for reference in base_report.references %}
-        <li>{{ reference }}</li>
+{% for reference in render_context.references %}
+        <li>
+{% if reference.reference %}
+          <span>{{ reference.reference }}</span>
+{% endif %}
+{% if reference.source_labels %}
+          <p class="provenance"><span class="provenance-label">Sources</span> {{ reference.source_labels | join(", ") }}</p>
+{% endif %}
+        </li>
 {% endfor %}
       </ol>
 {% else %}

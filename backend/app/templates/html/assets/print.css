@@ -55,6 +55,13 @@ h1 {
   background: #ffffff;
 }
 
+.definition-item,
+.intelligence-metadata > div,
+.category-chip {
+  color: #000000;
+  background: #ffffff;
+}
+
 .finding,
 .timeline-event,
 .empty-state {
@@ -62,9 +69,15 @@ h1 {
 }
 
 .tag-list li,
-code {
+code,
+.source-label {
   color: #000000;
   background: #ffffff;
+  border: 0.5pt solid #6b7280;
+}
+
+.intelligence-metadata > div,
+.category-chip {
   border: 0.5pt solid #6b7280;
 }
 

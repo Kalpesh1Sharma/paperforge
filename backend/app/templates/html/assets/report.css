@@ -231,6 +231,91 @@ h3 {
   font-weight: 700;
 }
 
+.source-label {
+  color: var(--accent-dark);
+  font-weight: 700;
+}
+
+.intelligence-metadata {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0 0 0.75rem;
+}
+
+.intelligence-metadata > div {
+  display: inline-flex;
+  gap: 0.3rem;
+  padding: 0.25rem 0.5rem;
+  color: #103d8f;
+  background: #dbeafe;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.intelligence-metadata dt {
+  font-weight: 700;
+}
+
+.intelligence-metadata dd {
+  margin: 0;
+}
+
+.evidence-count,
+.inline-references,
+.related-concepts {
+  margin: 0 0 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.87rem;
+}
+
+.category-chip {
+  display: inline-block;
+  margin: 0 0 0.65rem;
+  padding: 0.22rem 0.55rem;
+  color: #4c1d95;
+  background: #ede9fe;
+  border: 1px solid #ddd6fe;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tag-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+
+.entity-aliases,
+.entity-sources {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.entity-sources {
+  color: var(--accent-dark);
+  font-weight: 700;
+}
+
+.definition-item {
+  padding: 0.9rem 1rem;
+  background: var(--surface-muted);
+  border-left: 0.25rem solid var(--accent);
+  border-radius: 0 0.45rem 0.45rem 0;
+}
+
+.definition-item > strong {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
 code {
   padding: 0.1rem 0.25rem;
   color: #334155;

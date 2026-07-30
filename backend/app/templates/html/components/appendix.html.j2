@@ -1,8 +1,8 @@
-    <section class="report-section" aria-labelledby="key-findings-heading">
-      <h2 id="key-findings-heading">Key Findings</h2>
-{% if render_context.findings %}
-      <ol class="findings-list">
-{% for finding in render_context.findings %}
+    <section class="report-section" aria-labelledby="appendix-heading">
+      <h2 id="appendix-heading">Appendix</h2>
+{% if render_context.appendix_findings %}
+      <ol class="findings-list appendix-findings">
+{% for finding in render_context.appendix_findings %}
         <li class="finding">
           <h3>{{ finding.title }}</h3>
           <p>{{ finding.summary }}</p>
@@ -32,6 +32,6 @@
 {% endfor %}
       </ol>
 {% else %}
-      <p class="empty-state">{{ empty_state }}</p>
+      <p class="empty-state">No additional findings.</p>
 {% endif %}
     </section>

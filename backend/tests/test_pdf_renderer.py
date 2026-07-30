@@ -15,6 +15,7 @@ from app.reports import (
     Finding,
     InvalidResearchReportError,
     PDFRenderer,
+    ReportIntelligence,
     ReportRenderingError,
     ResearchReport,
     SynthesisMetadata,
@@ -356,6 +357,46 @@ def test_pdf_renderer_auto_creates_parent_and_overwrites_after_success(
     assert output_path.parent.is_dir()
     assert second_path.read_bytes() != b"stale output"
     _assert_no_temporary_artifacts(output_path.parent)
+
+
+def test_pdf_renderer_remains_an_html_only_consumer_of_refined_reports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Appendix refinement data is passed unchanged to the HTML presentation layer."""
+    refined_report = _report().model_copy(
+        update={
+            "appendix_findings": (
+                Finding(
+                    title="Appendix finding",
+                    description="A lower-ranked supported fact.",
+                    supporting_chunk_ids=(_CHUNK_ID,),
+                ),
+            )
+        }
+    )
+    html_renderers = _install_html_renderer(monkeypatch)
+    _install_playwright(monkeypatch)
+
+    PDFRenderer().render(refined_report, tmp_path / "refined.pdf")
+
+    assert html_renderers[0].calls == [refined_report]
+
+
+def test_pdf_renderer_passes_the_intelligence_overlay_to_html_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PDF rendering remains an HTML-only downstream consumer of intelligence."""
+    enriched_report = _report().model_copy(
+        update={"report_intelligence": ReportIntelligence()}
+    )
+    html_renderers = _install_html_renderer(monkeypatch)
+    _install_playwright(monkeypatch)
+
+    PDFRenderer().render(enriched_report, tmp_path / "intelligence.pdf")
+
+    assert html_renderers[0].calls == [enriched_report]
 
 
 def test_pdf_renderer_preserves_invalid_report_errors(
