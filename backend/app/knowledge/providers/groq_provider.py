@@ -2,11 +2,13 @@
 
 import json
 import logging
+from collections.abc import Mapping
 from time import perf_counter
 
 from groq import (
     APIConnectionError,
     APIError,
+    APIStatusError,
     APITimeoutError,
     AuthenticationError,
     Groq,
@@ -21,13 +23,14 @@ from app.knowledge.exceptions import (
     GroqProviderError,
     GroqRateLimitError,
     GroqSchemaValidationError,
+    GroqTemporaryServiceError,
     GroqTimeoutError,
     MalformedGroqJsonError,
     MissingGroqApiKeyError,
     MissingGroqModelError,
     UnexpectedGroqResponseError,
 )
-from app.knowledge.models import KnowledgeObject
+from app.knowledge.models import KnowledgeExtractionMetadata, KnowledgeObject
 from app.knowledge.prompts import KNOWLEDGE_EXTRACTION_SYSTEM_PROMPT
 from app.knowledge.providers.base import BaseKnowledgeProvider
 from app.knowledge.schemas import KnowledgeResponse
@@ -73,6 +76,14 @@ class GroqKnowledgeProvider(BaseKnowledgeProvider):
                 dates=response.dates,
                 references=response.references,
                 confidence=response.confidence,
+                extraction_metadata=KnowledgeExtractionMetadata(
+                    provider="groq",
+                    model=model,
+                    elapsed_ms=self._elapsed_ms(started_at),
+                    successful=True,
+                    fallback=False,
+                    reason=None,
+                ),
             )
         except APITimeoutError as exc:
             self._log_failure(chunk, model, started_at)
@@ -86,15 +97,18 @@ class GroqKnowledgeProvider(BaseKnowledgeProvider):
         except APIConnectionError as exc:
             self._log_failure(chunk, model, started_at)
             raise GroqNetworkError("Groq service could not be reached.") from exc
+        except APIStatusError as exc:
+            self._log_failure(chunk, model, started_at)
+            raise self._status_error(exc) from exc
         except APIError as exc:
             self._log_failure(chunk, model, started_at)
             raise GroqProviderError("Groq request failed.") from exc
         except GroqProviderError:
             self._log_failure(chunk, model, started_at)
             raise
-        except Exception as exc:
+        except Exception:
             self._log_failure(chunk, model, started_at)
-            raise GroqProviderError("Groq knowledge extraction failed.") from exc
+            raise
 
         self._log_success(chunk, model, started_at)
         return knowledge_object
@@ -149,6 +163,46 @@ class GroqKnowledgeProvider(BaseKnowledgeProvider):
             ) from exc
 
     @staticmethod
+    def _status_error(error: APIStatusError) -> GroqProviderError:
+        """Map status errors without treating permanent 4xx failures as transient."""
+        status_code = getattr(error, "status_code", None)
+
+        if status_code == 401:
+            return GroqAuthenticationError("Groq authentication failed.")
+        if GroqKnowledgeProvider._is_rate_limit_status_error(error):
+            return GroqRateLimitError("Groq request was rate limited.")
+        if isinstance(status_code, int) and 500 <= status_code <= 599:
+            return GroqTemporaryServiceError(
+                "Groq service temporarily failed with a server error."
+            )
+
+        return GroqProviderError("Groq request failed.")
+
+    @staticmethod
+    def _is_rate_limit_status_error(error: APIStatusError) -> bool:
+        """Recognize rate limits that the SDK exposes as generic status errors."""
+        if getattr(error, "status_code", None) == 429:
+            return True
+
+        body = getattr(error, "body", None)
+        if isinstance(body, Mapping):
+            details = body.get("error", body)
+            if isinstance(details, Mapping):
+                code = details.get("code")
+                if isinstance(code, str) and code.casefold() in {
+                    "rate_limit",
+                    "rate_limit_exceeded",
+                }:
+                    return True
+
+        return "rate_limit_exceeded" in str(error).casefold()
+
+    @staticmethod
+    def _elapsed_ms(started_at: float) -> float:
+        """Return non-negative monotonic extraction time in milliseconds."""
+        return max(0.0, (perf_counter() - started_at) * 1000)
+
+    @staticmethod
     def _log_success(
         chunk: DocumentChunk,
         model: str,
@@ -159,7 +213,7 @@ class GroqKnowledgeProvider(BaseKnowledgeProvider):
             "elapsed_ms=%.2f",
             chunk.chunk_id,
             model,
-            (perf_counter() - started_at) * 1000,
+            GroqKnowledgeProvider._elapsed_ms(started_at),
         )
 
     @staticmethod
@@ -173,5 +227,5 @@ class GroqKnowledgeProvider(BaseKnowledgeProvider):
             "elapsed_ms=%.2f",
             chunk.chunk_id,
             model,
-            (perf_counter() - started_at) * 1000,
+            GroqKnowledgeProvider._elapsed_ms(started_at),
         )

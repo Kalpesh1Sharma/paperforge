@@ -21,10 +21,16 @@ from app.reports import (
     SynthesisMetadata,
     SynthesizedSection,
 )
+from app.reports.composer import ReportComposer
 from app.reports import pdf_renderer
+from app.reports.presentation_models import PresentationModel
 
 _CHUNK_ID = UUID("12345678-1234-5678-1234-567812345678")
 _HTML_DOCUMENT = "<!doctype html><html><body>Report</body></html>"
+_TOC_HTML_DOCUMENT = """<!doctype html><html><body>
+<nav><a class="toc-link" href="#abstract"><span class="toc-page-reference" data-target="#abstract" aria-hidden="true"></span></a></nav>
+<section id="abstract"><h2>Abstract</h2></section>
+</body></html>"""
 
 
 def _report() -> EnhancedResearchReport:
@@ -66,6 +72,28 @@ def _report() -> EnhancedResearchReport:
             elapsed_ms=0.0,
             successful=True,
         ),
+    )
+
+
+def _anchor_bearing_html(presentation: PresentationModel) -> str:
+    """Materialize minimal navigation HTML directly from a presentation model.
+
+    This deliberately mirrors the adapter boundary rather than any report
+    template: the PDF renderer must treat the already-rendered HTML as opaque.
+    """
+    toc = "".join(
+        f'<a href="#{entry.anchor_id}">{entry.heading}</a>'
+        for entry in presentation.table_of_contents.entries
+    )
+    sections = "".join(
+        f'<section id="{section.anchor_id}"><h2>{section.heading}</h2></section>'
+        for section in presentation.sections
+    )
+    return (
+        "<!doctype html><html><body>"
+        f'<nav aria-label="Table of contents">{toc}</nav>'
+        f"{sections}"
+        "</body></html>"
     )
 
 
@@ -238,10 +266,18 @@ class FakeHTMLRenderer:
         self._html = html
         self._error = error
         self.calls: list[EnhancedResearchReport] = []
+        self.presentation_calls: list[object] = []
 
     def render(self, report: EnhancedResearchReport) -> str:
         """Return supplied HTML or raise a configured rendering error."""
         self.calls.append(report)
+        if self._error is not None:
+            raise self._error
+        return self._html
+
+    def render_presentation(self, presentation: object) -> str:
+        """Return supplied HTML for one already-composed presentation model."""
+        self.presentation_calls.append(presentation)
         if self._error is not None:
             raise self._error
         return self._html
@@ -338,6 +374,84 @@ def test_pdf_renderer_writes_a4_pdf_and_closes_all_resources(
         assert document.language == "en"
     finally:
         document.close()
+
+
+def test_pdf_renderer_materializes_physical_toc_page_references(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A private preflight keeps printed TOC numbers accurate in Chromium."""
+    html_renderers = _install_html_renderer(monkeypatch, html=_TOC_HTML_DOCUMENT)
+    _, _, _, _, page = _install_playwright(monkeypatch)
+    monkeypatch.setattr(
+        PDFRenderer,
+        "_toc_page_numbers",
+        staticmethod(lambda _pdf_path, _anchors: {"abstract": 3}),
+    )
+
+    PDFRenderer().render(_report(), tmp_path / "toc.pdf")
+
+    assert len(html_renderers) == 1
+    assert page.html_contents_at_navigation == [
+        _TOC_HTML_DOCUMENT,
+        _TOC_HTML_DOCUMENT.replace(
+            'aria-hidden="true"></span>',
+            'aria-hidden="true">3</span>',
+        ),
+    ]
+    assert len(page.pdf_calls) == 2
+    _assert_no_temporary_artifacts(tmp_path)
+
+
+def test_pdf_renderer_delegates_composed_presentation_to_html_renderer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The presentation adapter shares PDF export while preserving model identity."""
+    presentation = ReportComposer().compose(_report())
+    html_renderers = _install_html_renderer(monkeypatch)
+    manager, chromium, browser, context, page = _install_playwright(monkeypatch)
+    output_path = tmp_path / "presentation" / "report.pdf"
+
+    returned_path = PDFRenderer().render_presentation(
+        presentation,
+        output_path,
+    )
+
+    assert returned_path == output_path.resolve()
+    assert returned_path.is_file()
+    assert html_renderers[0].calls == []
+    assert html_renderers[0].presentation_calls == [presentation]
+    assert chromium.launch_calls == [{"headless": True}]
+    assert page.media_calls == [{"media": "print"}]
+    assert context.closed is True
+    assert browser.closed is True
+    assert manager.exited is True
+    _assert_no_temporary_artifacts(output_path.parent)
+
+
+def test_pdf_renderer_preserves_anchor_bearing_presentation_html_through_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PDF export treats shared navigation HTML as opaque renderer output."""
+    presentation = ReportComposer().compose(_report())
+    before = deepcopy(presentation.model_dump(mode="python"))
+    expected_html = _anchor_bearing_html(presentation)
+    html_renderers = _install_html_renderer(monkeypatch, html=expected_html)
+    _, _, _, _, page = _install_playwright(monkeypatch)
+
+    PDFRenderer().render_presentation(presentation, tmp_path / "anchors.pdf")
+
+    assert html_renderers[0].calls == []
+    assert html_renderers[0].presentation_calls == [presentation]
+    assert presentation.model_dump(mode="python") == before
+    assert page.html_contents_at_navigation == [expected_html]
+    temporary_html = page.html_contents_at_navigation[0]
+    for entry in presentation.table_of_contents.entries:
+        assert f'href="#{entry.anchor_id}"' in temporary_html
+    for section in presentation.sections:
+        assert f'<section id="{section.anchor_id}">' in temporary_html
 
 
 def test_pdf_renderer_auto_creates_parent_and_overwrites_after_success(

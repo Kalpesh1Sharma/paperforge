@@ -1,87 +1,278 @@
 @page {
-  margin: 0.7in;
+  size: A4;
+  margin: 0.78in 0.72in 0.82in;
+
+  @top-left {
+    color: #50584e;
+    /* Chromium does not consistently support CSS running strings.  A stable
+       publication label keeps the interior header visible across engines. */
+    content: "PaperForge Research Report";
+    font-family: "Segoe UI", Arial, sans-serif;
+    font-size: 8pt;
+  }
+
+  @top-right {
+    color: #50584e;
+    content: "PaperForge";
+    font-family: "Segoe UI", Arial, sans-serif;
+    font-size: 8pt;
+  }
+
+  @bottom-right {
+    color: #50584e;
+    content: counter(page);
+    font-family: "Segoe UI", Arial, sans-serif;
+    font-size: 8pt;
+  }
+}
+
+@page cover {
+  margin: 0.72in;
+
+  @top-left {
+    content: normal;
+  }
+
+  @top-right {
+    content: normal;
+  }
+
+  @bottom-right {
+    content: normal;
+  }
 }
 
 html,
 body {
   color: #000000;
   background: #ffffff;
-  font-size: 10.5pt;
+  font-size: 9.8pt;
+  line-height: 1.54;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
 }
 
-.skip-link,
-.report-footer {
+body {
+  orphans: 3;
+  widows: 3;
+}
+
+.skip-link {
   display: none;
 }
 
-.report {
-  width: auto;
+.publication-report {
+  inline-size: auto;
   margin: 0;
-  overflow: visible;
   background: #ffffff;
   border: 0;
-  border-radius: 0;
-  box-shadow: none;
 }
 
-.report-header {
-  padding: 0 0 1.4rem;
+#report-title {
+  string-set: report-title content(text);
+}
+
+.cover-page {
+  page: cover;
+  min-block-size: calc(11.69in - 1.44in);
+  padding: 0;
+  break-after: page;
+}
+
+.cover-rule {
+  background: #000000;
+}
+
+.publication-mark,
+.cover-kicker,
+.section-label,
+.metadata-heading,
+.importance-label,
+.evidence-metadata dt,
+.publication-metadata dt,
+.entity-confidence,
+.entity-sources,
+.provenance span,
+.evidence-references span,
+h1,
+h2,
+h3,
+h4,
+.evidence-table figcaption,
+.timeline-event time {
   color: #000000;
-  background: #ffffff;
-  border-bottom: 1.5pt solid #000000;
 }
 
-.eyebrow,
-h1 {
-  color: #000000;
-}
-
-.report-section {
-  padding: 1.1rem 0;
-  border-top-color: #9ca3af;
-}
-
-.report-section,
-.finding,
-.timeline-event,
-.generation-metadata > div {
-  break-inside: avoid;
-}
-
-.finding,
-.timeline-event,
+.cover-deck,
+.publication-metadata dd,
+.evidence-note,
 .empty-state,
-.generated-by {
-  background: #ffffff;
+.report-footer {
+  color: #1f1f1f;
 }
 
-.definition-item,
-.intelligence-metadata > div,
-.category-chip {
+.publication-metadata {
+  max-inline-size: none;
+  border-block-start-color: #000000;
+}
+
+.publication-metadata dl > div,
+.publication-metadata dt,
+.publication-metadata dd {
+  border-color: #666666;
+}
+
+.publication-metadata dl {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.status-badge,
+.confidence-meter {
+  background: #ffffff;
+  border: 0.5pt solid #666666;
+}
+
+.confidence-meter-fill {
+  background: #000000;
+}
+
+.table-of-contents {
+  padding: 0;
+  background: #ffffff;
+  border-block-start-color: #000000;
+  break-after: page;
+}
+
+.table-of-contents li,
+.toc-leader {
+  border-color: #666666;
+}
+
+.toc-link {
   color: #000000;
-  background: #ffffff;
 }
 
-.finding,
+/* Paged-media engines resolve this target counter during PDF composition.
+   Standalone HTML deliberately does not invent a physical page number. */
+.toc-page-reference:empty::before {
+  content: target-counter(attr(data-target), page);
+}
+
+.publication-section,
+.report-footer {
+  padding-inline: 0;
+}
+
+.publication-section {
+  padding-block: 1.55rem;
+  border-block-end-color: #777777;
+}
+
+/* The cover and contents own their pages.  The body then follows natural
+   publication flow; only dense back matter begins a fresh printed page. */
+.publication-section--evidence-summary,
+.publication-section--appendix {
+  break-before: page;
+}
+
+.section-header,
+.finding-group > header,
+.entity-group > header,
+.concept-cluster > header,
+.timeline > header,
+.appendix-group > header,
+.reference-group > header {
+  break-after: avoid-page;
+}
+
+.section-header {
+  break-inside: avoid-page;
+}
+
+.insight,
+.concept,
+.timeline-event,
+.appendix-group,
+.evidence-table,
+.entity-group,
+.reference-group {
+  break-inside: avoid-page;
+}
+
+.insight,
+.concept,
 .timeline-event,
 .empty-state {
-  border-left-color: #000000;
+  border-inline-start-color: #000000;
 }
 
-.tag-list li,
-code,
-.source-label {
+.evidence-note,
+.appendix-group,
+.publication-metadata,
+.table-scroll {
+  border-color: #666666;
+}
+
+.entity-list li {
+  color: #000000;
+  border-color: #666666;
+}
+
+.timeline ol::before,
+.timeline-event::before {
+  background: #000000;
+}
+
+.evidence-table {
+  break-inside: auto;
+}
+
+.evidence-table--key-metrics,
+.evidence-table--compression-statistics,
+.evidence-table--appendix-statistics {
+  break-inside: avoid-page;
+}
+
+.evidence-table--compression-statistics th,
+.evidence-table--compression-statistics td,
+.evidence-table--appendix-statistics th,
+.evidence-table--appendix-statistics td {
+  padding-block: 0.32rem;
+}
+
+.evidence-table figcaption {
+  break-after: avoid-page;
+}
+
+thead {
+  display: table-header-group;
+}
+
+tfoot {
+  display: table-footer-group;
+}
+
+tr,
+img,
+svg {
+  break-inside: avoid-page;
+}
+
+th,
+td {
+  border-color: #777777;
+}
+
+th {
   color: #000000;
   background: #ffffff;
-  border: 0.5pt solid #6b7280;
 }
 
-.intelligence-metadata > div,
-.category-chip {
-  border: 0.5pt solid #6b7280;
+.report-footer {
+  border-block-end-color: #000000;
 }
 
 a {
   color: #000000;
-  text-decoration: underline;
+  text-decoration-color: #000000;
 }

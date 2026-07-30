@@ -107,22 +107,6 @@ class RenderFindingGroup:
 
 
 @dataclass(frozen=True)
-class _PresentationConfig:
-    """Private immutable limits for the shared enhanced-report view."""
-
-    max_entities_per_category: int = 8
-
-    def __post_init__(self) -> None:
-        """Reject invalid private configuration without exposing a renderer API."""
-        if (
-            isinstance(self.max_entities_per_category, bool)
-            or not isinstance(self.max_entities_per_category, int)
-            or self.max_entities_per_category < 1
-        ):
-            raise ValueError("max_entities_per_category must be a positive integer.")
-
-
-@dataclass(frozen=True)
 class _ConfidenceSignal:
     """Private evidence inputs used solely for display-confidence calibration."""
 
@@ -199,8 +183,6 @@ class _DisplayConfidenceCalibrator:
                 labels[key] = f"{percentage}%"
         return labels
 
-
-_DEFAULT_PRESENTATION_CONFIG = _PresentationConfig()
 
 _FINDING_GROUP_RULES: tuple[tuple[str, frozenset[str]], ...] = (
     (
@@ -310,17 +292,12 @@ class EnhancedReportRenderContext:
     def from_report(
         cls,
         report: EnhancedResearchReport,
-        *,
-        _config: _PresentationConfig = _DEFAULT_PRESENTATION_CONFIG,
     ) -> "EnhancedReportRenderContext":
         """Build one stable context, using deterministic fields as a fallback."""
         citation_index = CitationIndex.from_report(report)
         intelligence = report.report_intelligence
         finding_overrides = cls._finding_overrides(intelligence)
-        visible_intelligent_entities = cls._visible_intelligent_entities(
-            report,
-            _config,
-        )
+        visible_intelligent_entities = cls._visible_intelligent_entities(report)
         calibrator = cls._confidence_calibrator(
             report,
             visible_intelligent_entities,
@@ -639,12 +616,12 @@ class EnhancedReportRenderContext:
     def _visible_intelligent_entities(
         cls,
         report: EnhancedResearchReport,
-        config: _PresentationConfig,
     ) -> tuple[tuple["EntityGroup", tuple["NormalizedEntity", ...]], ...]:
-        """Apply entity limits only to this transient render context.
+        """Expose complete ranked entities for later budgeted composition.
 
-        ``ReportIntelligence`` remains the complete ranked source of truth; the
-        slice below is intentionally not retained on any immutable report model.
+        ``PresentationBudget`` is the sole owner of display limits.  The
+        render adapter therefore retains every normalized entity so the
+        composer can make one mode-aware allocation decision.
         """
         intelligence = report.report_intelligence
         if intelligence is None or not intelligence.entity_groups:
@@ -654,7 +631,7 @@ class EnhancedReportRenderContext:
             tuple["EntityGroup", tuple["NormalizedEntity", ...]]
         ] = []
         for group in intelligence.entity_groups:
-            entities = tuple(group.entities[: config.max_entities_per_category])
+            entities = tuple(group.entities)
             if entities:
                 visible_groups.append((group, entities))
         return tuple(visible_groups)

@@ -1,5 +1,6 @@
 """Generate a Markdown research report from the bundled sample PDF."""
 
+from datetime import date
 from pathlib import Path
 import sys
 
@@ -16,6 +17,7 @@ from app.reports import (
     ReportIntelligenceBuilder,
     ResearchSynthesizer,
 )
+from app.reports.composer import ReportComposer
 
 
 def main() -> None:
@@ -30,7 +32,12 @@ def main() -> None:
         enhanced_report,
         knowledge_objects,
     )
-    markdown = MarkdownRenderer().render_enhanced(enhanced_report)
+    presentation = ReportComposer().compose(
+        enhanced_report,
+        source_document=document,
+        generated_on=date.today(),
+    )
+    markdown = MarkdownRenderer().render_presentation(presentation)
     print(markdown, end="")
 
 

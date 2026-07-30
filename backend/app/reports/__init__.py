@@ -2,10 +2,12 @@
 
 from app.reports.exceptions import (
     InvalidResearchReportError,
+    ReportCompositionError,
     ReportError,
     ReportRenderingError,
     ReportSynthesisError,
 )
+from app.reports.composer import ReportComposer
 from app.reports.enhanced_models import (
     EnhancedResearchReport,
     SynthesisSourceEvidence,
@@ -26,6 +28,28 @@ from app.reports.intelligence import (
 )
 from app.reports.pdf_renderer import PDFRenderer
 from app.reports.models import Finding, ReportSection, ResearchReport, TimelineEvent
+from app.reports.presentation_models import (
+    AppendixGroup,
+    CompressionStatistic,
+    ConceptCard,
+    DocumentMetadata,
+    EntityCard,
+    EntityPresentationGroup,
+    EvidenceTable,
+    GroupedFinding,
+    HiddenPresentationData,
+    InsightCard,
+    MetricCard,
+    PresentationBudget,
+    PresentationEvidence,
+    PresentationModel,
+    PresentationSection,
+    ReferenceCard,
+    ReportMode,
+    TableOfContents,
+    TableOfContentsEntry,
+    TimelineCard,
+)
 from app.reports.renderer import MarkdownRenderer
 from app.reports.synthesizer import ResearchSynthesizer
 
@@ -34,16 +58,28 @@ __all__ = [
     "DocumentSynthesizer",
     "ConsolidatedDefinition",
     "ConsolidatedReference",
+    "CompressionStatistic",
+    "ConceptCard",
+    "DocumentMetadata",
     "EnrichedFinding",
     "EntityGroup",
+    "EntityCard",
+    "EntityPresentationGroup",
+    "EvidenceTable",
     "Finding",
+    "GroupedFinding",
+    "HiddenPresentationData",
     "HTMLRenderer",
     "InvalidResearchReportError",
+    "InsightCard",
     "IntelligentTimelineEvent",
     "MarkdownRenderer",
+    "MetricCard",
     "NormalizedEntity",
     "PDFRenderer",
     "ReportError",
+    "ReportComposer",
+    "ReportCompositionError",
     "ReportRenderingError",
     "ReportSection",
     "ReportSynthesisError",
@@ -54,5 +90,14 @@ __all__ = [
     "SynthesisSourceEvidence",
     "SynthesizedSection",
     "SynthesisMetadata",
+    "PresentationEvidence",
+    "PresentationBudget",
+    "PresentationModel",
+    "PresentationSection",
+    "ReferenceCard",
+    "ReportMode",
+    "TableOfContents",
+    "TableOfContentsEntry",
+    "TimelineCard",
     "TimelineEvent",
 ]

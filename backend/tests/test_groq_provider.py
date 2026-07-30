@@ -24,6 +24,11 @@ from app.knowledge import (
     MissingGroqModelError,
     UnexpectedGroqResponseError,
 )
+from app.knowledge.exceptions import (
+    GroqTemporaryServiceError,
+    RecoverableProviderError,
+)
+from app.knowledge.models import KnowledgeExtractionMetadata
 from app.knowledge.providers import groq_provider
 from app.models.document_chunk import DocumentChunk
 
@@ -124,6 +129,14 @@ def test_successful_extraction_uses_one_deterministic_request(
     assert result.chunk_id == chunk.chunk_id
     assert result.entities == ("PaperForge",)
     assert result.confidence == 1.0
+    assert isinstance(result.extraction_metadata, KnowledgeExtractionMetadata)
+    assert result.extraction_metadata.provider == "groq"
+    assert result.extraction_metadata.model == "test-model"
+    assert result.extraction_metadata.successful is True
+    assert result.extraction_metadata.fallback is False
+    assert result.extraction_metadata.reason is None
+    assert result.extraction_metadata.elapsed_ms >= 0.0
+    assert "extraction_metadata" not in result.model_dump()
     assert chunk.model_dump(mode="python") == before
     assert provider.__dict__ == {}
     assert constructor_calls == [{"api_key": "test-api-key", "max_retries": 0}]
@@ -138,6 +151,77 @@ def test_successful_extraction_uses_one_deterministic_request(
         result.confidence = 0.5
     with pytest.raises(AttributeError):
         result.entities.append("New entity")  # type: ignore[attr-defined]
+    with pytest.raises(ValidationError):
+        result.extraction_metadata.provider = "other"  # type: ignore[union-attr]
+
+
+class FakeApiStatusError(Exception):
+    """SDK-style status error double with only the required status field."""
+
+    def __init__(self, status_code: int, body: object | None = None) -> None:
+        super().__init__(f"HTTP {status_code}")
+        self.status_code = status_code
+        self.body = body
+
+
+@pytest.mark.parametrize(
+    ("status_code", "provider_error", "recoverable"),
+    [
+        (401, GroqAuthenticationError, False),
+        (403, GroqProviderError, False),
+        (429, GroqRateLimitError, True),
+        (503, GroqTemporaryServiceError, True),
+    ],
+)
+def test_status_errors_are_classified_by_recoverability(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_groq: None,
+    status_code: int,
+    provider_error: type[Exception],
+    recoverable: bool,
+) -> None:
+    monkeypatch.setattr(groq_provider, "APIStatusError", FakeApiStatusError)
+    completions = FakeCompletions(error=FakeApiStatusError(status_code))
+    _install_client(monkeypatch, completions)
+
+    with pytest.raises(provider_error) as captured:
+        GroqKnowledgeProvider().extract(_chunk())
+
+    assert isinstance(captured.value, RecoverableProviderError) is recoverable
+    assert len(completions.calls) == 1
+
+
+def test_rate_limit_status_body_is_recoverable(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_groq: None,
+) -> None:
+    """Groq token limits may arrive as a generic non-429 status response."""
+    monkeypatch.setattr(groq_provider, "APIStatusError", FakeApiStatusError)
+    completions = FakeCompletions(
+        error=FakeApiStatusError(
+            413,
+            body={"error": {"code": "rate_limit_exceeded"}},
+        )
+    )
+    _install_client(monkeypatch, completions)
+
+    with pytest.raises(GroqRateLimitError):
+        GroqKnowledgeProvider().extract(_chunk())
+
+    assert len(completions.calls) == 1
+
+
+def test_unexpected_programming_error_is_not_reclassified_as_transient(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_groq: None,
+) -> None:
+    completions = FakeCompletions(error=RuntimeError("implementation defect"))
+    _install_client(monkeypatch, completions)
+
+    with pytest.raises(RuntimeError, match="implementation defect"):
+        GroqKnowledgeProvider().extract(_chunk())
+
+    assert len(completions.calls) == 1
 
 
 def test_malformed_json_raises_provider_specific_error(
@@ -247,6 +331,27 @@ def test_sdk_errors_are_mapped_without_retrying(
         GroqKnowledgeProvider().extract(_chunk())
 
     assert constructor_calls[0]["max_retries"] == 0
+    assert len(completions.calls) == 1
+
+
+def test_rate_limited_groq_extraction_uses_default_local_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_groq: None,
+) -> None:
+    """Existing extractor construction survives a Groq rate limit unchanged."""
+    rate_limit_error = type("FakeRateLimitError", (Exception,), {})
+    monkeypatch.setattr(groq_provider, "RateLimitError", rate_limit_error)
+    completions = FakeCompletions(error=rate_limit_error("rate limited"))
+    _install_client(monkeypatch, completions)
+    chunk = _chunk()
+
+    result = KnowledgeExtractor(GroqKnowledgeProvider()).extract(chunk)
+
+    assert result.chunk_id == chunk.chunk_id
+    assert result.extraction_metadata is not None
+    assert result.extraction_metadata.provider == "deterministic"
+    assert result.extraction_metadata.fallback is True
+    assert result.extraction_metadata.reason == "rate_limit"
     assert len(completions.calls) == 1
 
 

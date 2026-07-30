@@ -4,13 +4,15 @@ import re
 
 from pydantic import ValidationError
 
+from app.reports.composer import ReportComposer
 from app.reports.enhanced_models import EnhancedResearchReport
 from app.reports.exceptions import (
     InvalidResearchReportError,
+    ReportCompositionError,
     ReportRenderingError,
 )
+from app.reports.presentation_models import PresentationModel
 from app.reports.template_loader import get_html_template, load_html_asset
-from app.reports.presentation import EnhancedReportRenderContext
 
 _SUMMARY_PARAGRAPH_SEPARATOR = re.compile(r"\r?\n[ \t]*(?:\r?\n)+")
 _EMPTY_STATE = "No information was extracted for this section."
@@ -20,18 +22,24 @@ class HTMLRenderer:
     """Render immutable ``EnhancedResearchReport`` values as standalone HTML."""
 
     def render(self, report: EnhancedResearchReport) -> str:
-        """Return a complete, self-contained HTML document for one report."""
-        self._validate_report(report)
+        """Compose and render one enhanced report with default source metadata."""
+        try:
+            presentation = ReportComposer().compose(report)
+        except InvalidResearchReportError:
+            raise
+        except ReportCompositionError as exc:
+            raise ReportRenderingError(
+                "Unable to compose the enhanced research report."
+            ) from exc
+        return self.render_presentation(presentation)
+
+    def render_presentation(self, presentation: PresentationModel) -> str:
+        """Return a standalone HTML document from one presentation model."""
+        self._validate_presentation_model(presentation)
 
         try:
-            render_context = EnhancedReportRenderContext.from_report(report)
             rendered_html = get_html_template("report.html.j2").render(
-                report=report,
-                base_report=report.base_report,
-                render_context=render_context,
-                summary_paragraphs=self._summary_paragraphs(
-                    report.executive_summary
-                ),
+                presentation=presentation,
                 css=load_html_asset("report.css"),
                 print_css=load_html_asset("print.css"),
                 empty_state=_EMPTY_STATE,
@@ -49,6 +57,26 @@ class HTMLRenderer:
             raise ReportRenderingError("HTML report rendering returned no document.")
 
         return rendered_html.rstrip("\n") + "\n"
+
+    @staticmethod
+    def _validate_presentation_model(presentation: object) -> None:
+        """Defensively validate immutable, renderer-facing presentation data."""
+        if not isinstance(presentation, PresentationModel):
+            raise InvalidResearchReportError(
+                "Input must be a PresentationModel instance."
+            )
+        if getattr(presentation, "__pydantic_extra__", None):
+            raise InvalidResearchReportError(
+                "PresentationModel must not contain extra fields."
+            )
+        try:
+            PresentationModel.model_validate(
+                presentation.model_dump(mode="python", warnings="error")
+            )
+        except (AttributeError, TypeError, ValidationError, ValueError) as exc:
+            raise InvalidResearchReportError(
+                "PresentationModel failed structural validation."
+            ) from exc
 
     @classmethod
     def _validate_report(cls, report: object) -> None:

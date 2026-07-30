@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>{{ base_report.title }}</title>
+  <title>{{ presentation.cover.title }}</title>
   <style id="paperforge-report-styles">
 {{ css | safe }}
   </style>
@@ -12,123 +12,263 @@
 {{ print_css | safe }}
   </style>
 </head>
-<body>
+<body class="publication-document">
+{% macro evidence_details(evidence) -%}
+{% if evidence.confidence_label or evidence.source_labels or evidence.references %}
+              <aside class="evidence-note" aria-label="Evidence and provenance">
+                <dl class="evidence-metadata">
+{% if evidence.confidence_label %}
+                  <div><dt>Confidence</dt><dd>{{ evidence.confidence_label }}</dd></div>
+{% endif %}
+                  <div><dt>Evidence</dt><dd>{{ evidence.source_count }} {{ "source" if evidence.source_count == 1 else "sources" }}</dd></div>
+                </dl>
+{% if evidence.source_labels %}
+                <p class="provenance"><span>Supported by</span> {{ evidence.source_labels | join(", ") }}</p>
+{% endif %}
+{% if evidence.references %}
+                <p class="evidence-references"><span>Related references</span> <cite>{{ evidence.references | join("; ") }}</cite></p>
+{% endif %}
+              </aside>
+{% endif %}
+{%- endmacro %}
   <a class="skip-link" href="#report-content">Skip to report content</a>
-  <main id="report-content" class="report" aria-labelledby="report-title">
-    <header class="report-header">
-      <p class="eyebrow">PaperForge Research Report</p>
-      <h1 id="report-title">{{ base_report.title }}</h1>
+  <article id="report-content" class="publication-report" aria-labelledby="report-title">
+    <header id="cover-page" class="cover-page" aria-labelledby="report-title">
+      <div class="cover-rule" aria-hidden="true"></div>
+      <p class="publication-mark">PaperForge v0.9.0</p>
+      <p class="cover-kicker">Research report</p>
+      <h1 id="report-title">{{ presentation.cover.title }}</h1>
+      <p class="cover-deck">A technical research publication prepared for focused reading and evidence review.</p>
+      <aside class="publication-metadata" aria-labelledby="publication-details-heading">
+        <h2 id="publication-details-heading" class="metadata-heading">Publication details</h2>
+        <dl>
+          <div><dt>Prepared by</dt><dd>PaperForge</dd></div>
+          <div><dt>Prepared from</dt><dd>{{ presentation.cover.filename or "Not available" }}</dd></div>
+          <div><dt>Research domain</dt><dd>{{ presentation.cover.domain }}</dd></div>
+          <div><dt>Document type</dt><dd>{{ presentation.cover.file_type or "Not available" }}</dd></div>
+          <div><dt>Total pages</dt><dd>{{ presentation.cover.page_count if presentation.cover.page_count is not none else "Not available" }}</dd></div>
+          <div><dt>Generated</dt><dd>{% if presentation.cover.generated_on is not none %}<time datetime="{{ presentation.cover.generated_on.isoformat() }}">{{ presentation.cover.generated_on.isoformat() }}</time>{% else %}Not available{% endif %}</dd></div>
+          <div><dt>Knowledge objects analyzed</dt><dd>{{ presentation.cover.knowledge_object_count }}</dd></div>
+          <div><dt>Evidence sources</dt><dd>{{ presentation.cover.evidence_source_count }}</dd></div>
+          <div class="cover-confidence"><dt>Confidence summary</dt><dd>{% if presentation.cover.mean_confidence is not none %}<span>{{ (presentation.cover.mean_confidence * 100) | round | int }}%</span><span class="confidence-meter" aria-hidden="true"><span class="confidence-meter-fill" style="inline-size: {{ (presentation.cover.mean_confidence * 100) | round | int }}%;"></span></span>{% else %}Not available{% endif %}</dd></div>
+          <div class="cover-status"><dt>Report status</dt><dd><span class="status-badge">{{ presentation.cover.status }}</span></dd></div>
+          <div><dt>Synthesis provider</dt><dd>{{ presentation.cover.provider or "Not available" }}</dd></div>
+          <div><dt>Synthesis model</dt><dd>{{ presentation.cover.model or "Not applicable" }}</dd></div>
+        </dl>
+      </aside>
     </header>
 
-{% include "components/summary.html.j2" %}
-{% include "components/findings.html.j2" %}
-
-    <section class="report-section" aria-labelledby="important-entities-heading">
-      <h2 id="important-entities-heading">Important Entities</h2>
-{% if render_context.entity_groups %}
-{% for group in render_context.entity_groups %}
-{% if group.category %}
-      <p class="category-chip">{{ group.category }}</p>
-{% endif %}
-      <ul class="tag-list" role="list">
-{% for entity in group.entities %}
+    <nav id="table-of-contents" class="table-of-contents" aria-label="Table of contents">
+      <header class="navigation-header">
+        <p class="section-label">Navigation</p>
+        <h2>Table of Contents</h2>
+      </header>
+      <ol>
+{% for entry in presentation.table_of_contents.entries %}
         <li>
-          <span>{{ entity.name }}</span>
-{% if entity.aliases %}
-          <span class="entity-aliases">Also known as: {{ entity.aliases | join(", ") }}</span>
-{% endif %}
-{% if entity.confidence_label %}
-          <span class="entity-confidence">Confidence {{ entity.confidence_label }}</span>
-{% endif %}
-{% if entity.source_count %}
-          <span class="entity-evidence">{{ entity.source_count }} {{ "source" if entity.source_count == 1 else "sources" }}</span>
-{% endif %}
-{% if entity.source_labels %}
-          <span class="entity-sources">{{ entity.source_labels | join(", ") }}</span>
-{% endif %}
+          <a class="toc-link" href="#{{ entry.anchor_id }}">
+            <span class="toc-title">{{ entry.heading }}</span>
+            <span class="toc-leader" aria-hidden="true"></span>
+            <span class="toc-page-reference" data-target="#{{ entry.anchor_id }}" aria-hidden="true"></span>
+          </a>
         </li>
 {% endfor %}
-      </ul>
+      </ol>
+    </nav>
+
+{% for section in presentation.sections %}
+    <section id="{{ section.anchor_id }}" class="publication-section publication-section--{{ section.key }}" aria-labelledby="{{ section.anchor_id }}-heading">
+      <header class="section-header">
+        <p class="section-label">Section {{ "%02d" | format(loop.index) }}</p>
+        <h2 id="{{ section.anchor_id }}-heading">{{ section.heading }}</h2>
+      </header>
+{% if section.intro %}
+      <div class="section-prose section-prose--{{ section.key }}">
+{% for paragraph in section.intro %}
+        <p{% if loop.first and section.key in ("abstract", "executive-summary") %} class="section-lead"{% endif %}>{{ paragraph }}</p>
 {% endfor %}
-{% else %}
-      <p class="empty-state">{{ empty_state }}</p>
-{% endif %}
-    </section>
-
-    <section class="report-section" aria-labelledby="definitions-heading">
-      <h2 id="definitions-heading">Definitions</h2>
-{% if render_context.definitions %}
-      <ul class="definition-list" role="list">
-{% for definition in render_context.definitions %}
-        <li class="definition-item">
-          <strong>{{ definition.concept }}</strong>
-{% if definition.concept != definition.definition %}
-          <span>{{ definition.definition }}</span>
-{% endif %}
-{% if definition.related_concepts %}
-          <p class="related-concepts"><span class="provenance-label">Related concepts</span> {{ definition.related_concepts | join(", ") }}</p>
-{% endif %}
-{% if definition.confidence_label %}
-          <dl class="intelligence-metadata" aria-label="Definition evidence details">
-            <div><dt>Confidence</dt><dd>{{ definition.confidence_label }}</dd></div>
-            <div><dt>Evidence</dt><dd>{{ definition.source_count }} {{ "source" if definition.source_count == 1 else "sources" }}</dd></div>
-          </dl>
-{% endif %}
-{% if definition.source_labels %}
-          <p class="provenance"><span class="provenance-label">Supported by</span> {{ definition.source_labels | join(", ") }}</p>
-{% endif %}
-{% if definition.references %}
-          <p class="inline-references"><span class="provenance-label">References</span> {{ definition.references | join("; ") }}</p>
-{% endif %}
-        </li>
-{% endfor %}
-      </ul>
-{% else %}
-      <p class="empty-state">{{ empty_state }}</p>
-{% endif %}
-    </section>
-
-{% include "components/metrics.html.j2" %}
-{% include "components/timeline.html.j2" %}
-
-{% for section in render_context.sections %}
-    <section class="report-section synthesized-section" aria-labelledby="synthesized-section-{{ loop.index }}-heading">
-      <h2 id="synthesized-section-{{ loop.index }}-heading">{{ section.heading }}</h2>
-      <div class="prose">
-        <p>{{ section.content }}</p>
       </div>
-      <p class="provenance">
-        <span class="provenance-label">Supported by</span>
-{% for label in section.source_labels %}
-        <span class="source-label">{{ label }}</span>{% if not loop.last %}, {% endif %}
+{% endif %}
+
+{% for group in section.finding_groups %}
+{% set finding_group_index = loop.index %}
+      <section class="finding-group" aria-labelledby="{{ section.anchor_id }}-finding-group-{{ loop.index }}">
+        <header><h3 id="{{ section.anchor_id }}-finding-group-{{ loop.index }}">{{ group.heading }}</h3></header>
+{% if section.key == "technical-analysis" %}
+        <p class="finding-group-note">The findings below organize technical material for focused review.</p>
+{% endif %}
+        <ol class="insight-list insight-list--{{ section.key }}">
+{% for finding in group.findings %}
+          <li>
+            <article class="insight" aria-labelledby="{{ section.anchor_id }}-finding-group-{{ finding_group_index }}-finding-{{ loop.index }}">
+              <header>
+                <h4 id="{{ section.anchor_id }}-finding-group-{{ finding_group_index }}-finding-{{ loop.index }}">{{ finding.title }}</h4>
+{% if finding.importance %}
+                <p class="importance-label">{{ finding.importance }}</p>
+{% endif %}
+              </header>
+              <p>{{ finding.summary }}</p>
+{{ evidence_details(finding.evidence) }}
+            </article>
+          </li>
 {% endfor %}
-      </p>
-    </section>
+        </ol>
+      </section>
 {% endfor %}
 
-{% include "components/references.html.j2" %}
-{% include "components/appendix.html.j2" %}
+{% for group in section.entity_groups %}
+      <section class="entity-group" aria-labelledby="{{ section.anchor_id }}-entity-group-{{ loop.index }}">
+        <header><h3 id="{{ section.anchor_id }}-entity-group-{{ loop.index }}">{{ group.category }}</h3></header>
+        <p class="entity-group-note">Entities relevant to this report are listed by category.</p>
+        <ul class="entity-list" role="list">
+{% for entity in group.entities %}
+          <li>
+            <span class="entity-name">{{ entity.name }}</span>
+{% if entity.aliases %}
+            <span class="entity-aliases">Also known as: {{ entity.aliases | join(", ") }}</span>
+{% endif %}
+{% if entity.evidence.confidence_label %}
+            <span class="entity-confidence">{{ entity.evidence.confidence_label }} confidence</span>
+{% endif %}
+{% if entity.evidence.source_labels %}
+            <span class="entity-sources">{{ entity.evidence.source_labels | join(", ") }}</span>
+{% endif %}
+          </li>
+{% endfor %}
+        </ul>
+      </section>
+{% endfor %}
 
-    <section class="report-section generated-by" aria-labelledby="generated-by-heading">
-      <h2 id="generated-by-heading">Generated By</h2>
-      <dl class="generation-metadata">
-        <div>
-          <dt>Provider</dt>
-          <dd>{{ report.synthesis_metadata.provider }}</dd>
+{% if section.concepts %}
+      <section class="concept-cluster" aria-labelledby="{{ section.anchor_id }}-concepts-heading">
+        <header><h3 id="{{ section.anchor_id }}-concepts-heading">Concepts</h3></header>
+        <ol class="concept-list">
+{% for concept in section.concepts %}
+          <li>
+            <article class="concept" aria-labelledby="{{ section.anchor_id }}-concept-{{ loop.index }}">
+              <header><h4 id="{{ section.anchor_id }}-concept-{{ loop.index }}">{{ concept.concept }}</h4></header>
+              <p>{{ concept.definition }}</p>
+{% if concept.why_it_matters %}
+              <p class="why-it-matters"><span>Why it matters</span> {{ concept.why_it_matters }}</p>
+{% endif %}
+{% if concept.related_concepts %}
+              <p class="related-concepts"><span>Related concepts</span> {{ concept.related_concepts | join(", ") }}</p>
+{% endif %}
+{{ evidence_details(concept.evidence) }}
+            </article>
+          </li>
+{% endfor %}
+        </ol>
+      </section>
+{% endif %}
+
+{% if section.timeline %}
+      <section class="timeline" aria-labelledby="{{ section.anchor_id }}-timeline-heading">
+        <header><h3 id="{{ section.anchor_id }}-timeline-heading">Timeline</h3></header>
+        <ol>
+{% for event in section.timeline %}
+          <li>
+            <article class="timeline-event">
+              <header><time>{{ event.date }}</time></header>
+              <p>{{ event.description }}</p>
+{{ evidence_details(event.evidence) }}
+            </article>
+          </li>
+{% endfor %}
+        </ol>
+      </section>
+{% endif %}
+
+{% for table in section.evidence_tables %}
+      <figure class="evidence-table{% if table.title == 'Key Metrics' %} evidence-table--key-metrics{% endif %}{% if table.title == 'Compression Statistics' %} evidence-table--compression-statistics{% endif %}">
+        <figcaption id="{{ section.anchor_id }}-table-{{ loop.index }}-caption">{{ table.title }}</figcaption>
+        <div class="table-scroll">
+          <table aria-describedby="{{ section.anchor_id }}-table-{{ loop.index }}-caption">
+            <caption class="visually-hidden">Evidence table: {{ table.title }}</caption>
+            <thead><tr>{% for column in table.columns %}<th scope="col">{{ column }}</th>{% endfor %}</tr></thead>
+            <tbody>
+{% for row in table.rows %}
+              <tr>{% for value in row %}<td>{{ value }}</td>{% endfor %}</tr>
+{% endfor %}
+            </tbody>
+          </table>
         </div>
-        <div>
-          <dt>Model</dt>
-          <dd>{{ report.synthesis_metadata.model or "Not applicable" }}</dd>
-        </div>
-        <div>
-          <dt>Status</dt>
-          <dd>{% if report.synthesis_metadata.successful %}Successful{% else %}Unsuccessful{% endif %}</dd>
-        </div>
-      </dl>
+      </figure>
+{% endfor %}
+
+{% for appendix_group in section.appendix_groups %}
+{% set appendix_group_index = loop.index %}
+      <section class="appendix-group" aria-labelledby="{{ section.anchor_id }}-appendix-group-{{ loop.index }}">
+        <header><h3 id="{{ section.anchor_id }}-appendix-group-{{ loop.index }}">{{ appendix_group.heading }}</h3></header>
+{% if appendix_group.findings %}
+        <ol class="insight-list appendix-findings">
+{% for finding in appendix_group.findings %}
+          <li><article class="insight"><header><h4>{{ finding.title }}</h4></header><p>{{ finding.summary }}</p>{{ evidence_details(finding.evidence) }}</article></li>
+{% endfor %}
+        </ol>
+{% endif %}
+{% if appendix_group.concepts %}
+        <ol class="concept-list appendix-concepts">
+{% for concept in appendix_group.concepts %}
+          <li><article class="concept"><header><h4>{{ concept.concept }}</h4></header><p>{{ concept.definition }}</p>{{ evidence_details(concept.evidence) }}</article></li>
+{% endfor %}
+        </ol>
+{% endif %}
+{% for entity_group in appendix_group.entities %}
+        <section class="entity-group" aria-labelledby="{{ section.anchor_id }}-appendix-{{ appendix_group_index }}-entity-group-{{ loop.index }}">
+          <header><h4 id="{{ section.anchor_id }}-appendix-{{ appendix_group_index }}-entity-group-{{ loop.index }}">{{ entity_group.category }}</h4></header>
+          <ul class="entity-list" role="list">
+{% for entity in entity_group.entities %}
+            <li><span class="entity-name">{{ entity.name }}</span>{% if entity.aliases %}<span class="entity-aliases">Also known as: {{ entity.aliases | join(", ") }}</span>{% endif %}{% if entity.evidence.source_labels %}<span class="entity-sources">{{ entity.evidence.source_labels | join(", ") }}</span>{% endif %}</li>
+{% endfor %}
+          </ul>
+        </section>
+{% endfor %}
+{% if appendix_group.references %}
+        <ol class="reference-list">
+{% for reference in appendix_group.references %}
+          <li><cite>{{ reference.reference }}</cite>{{ evidence_details(reference.evidence) }}</li>
+{% endfor %}
+        </ol>
+{% endif %}
+{% for table in appendix_group.evidence_tables %}
+        <figure class="evidence-table evidence-table--appendix-statistics{% if table.title == 'Key Metrics' %} evidence-table--key-metrics{% endif %}{% if table.title == 'Compression Statistics' %} evidence-table--compression-statistics{% endif %}">
+          <figcaption id="{{ section.anchor_id }}-appendix-group-{{ appendix_group_index }}-table-{{ loop.index }}-caption">{{ table.title }}</figcaption>
+          <div class="table-scroll">
+            <table aria-describedby="{{ section.anchor_id }}-appendix-group-{{ appendix_group_index }}-table-{{ loop.index }}-caption">
+              <caption class="visually-hidden">Evidence table: {{ table.title }}</caption>
+              <thead><tr>{% for column in table.columns %}<th scope="col">{{ column }}</th>{% endfor %}</tr></thead>
+              <tbody>
+{% for row in table.rows %}
+                <tr>{% for value in row %}<td>{{ value }}</td>{% endfor %}</tr>
+{% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </figure>
+{% endfor %}
+      </section>
+{% endfor %}
+
+{% if section.references %}
+      <section class="reference-group" aria-labelledby="{{ section.anchor_id }}-references-heading">
+        <header><h3 id="{{ section.anchor_id }}-references-heading">References</h3></header>
+        <ol class="reference-list">
+{% for reference in section.references %}
+          <li><cite>{{ reference.reference }}</cite>{{ evidence_details(reference.evidence) }}</li>
+{% endfor %}
+        </ol>
+      </section>
+{% endif %}
+
+{% if not section.intro and not section.finding_groups and not section.entity_groups and not section.concepts and not section.timeline and not section.evidence_tables and not section.appendix_groups and not section.references %}
+      <p class="empty-state" role="status">{{ empty_state }}</p>
+{% endif %}
     </section>
-  </main>
-  <footer class="report-footer">
-    <p>Generated with PaperForge.</p>
-  </footer>
+{% endfor %}
+    <footer class="report-footer">
+      <p>Prepared by PaperForge. Source labels identify evidence in the report's ordered provenance ledger.</p>
+    </footer>
+  </article>
 </body>
 </html>

@@ -8,7 +8,6 @@ from pydantic import ValidationError
 
 from app.knowledge import (
     BaseKnowledgeProvider,
-    InvalidKnowledgeObjectError,
     KnowledgeExtractionError,
     KnowledgeExtractor,
     KnowledgeObject,
@@ -129,7 +128,8 @@ def test_extractor_rejects_validation_bypassed_chunk() -> None:
     assert provider.calls == []
 
 
-def test_extractor_rejects_invalid_provider_output() -> None:
+def test_extractor_falls_back_from_invalid_primary_provider_output() -> None:
+    """Malformed primary output is a recoverable response-validation failure."""
     chunk = _chunk()
     corrupted = KnowledgeObject.model_construct(
         chunk_id=chunk.chunk_id,
@@ -141,12 +141,20 @@ def test_extractor_rejects_invalid_provider_output() -> None:
         references=(),
         confidence=0.8,
     )
+    fallback_knowledge = _knowledge(chunk.chunk_id, confidence=0.6)
+    fallback_provider = RecordingProvider({chunk.chunk_id: fallback_knowledge})
 
-    with pytest.raises(InvalidKnowledgeObjectError, match="entities"):
-        KnowledgeExtractor(InvalidResultProvider(corrupted)).extract(chunk)
+    result = KnowledgeExtractor(
+        InvalidResultProvider(corrupted),
+        fallback_provider,
+    ).extract(chunk)
 
-    with pytest.raises(InvalidKnowledgeObjectError, match="KnowledgeObject"):
-        KnowledgeExtractor(InvalidResultProvider({})).extract(chunk)
+    assert fallback_provider.calls == [chunk]
+    assert result.chunk_id == chunk.chunk_id
+    assert result.entities == fallback_knowledge.entities
+    assert result.extraction_metadata is not None
+    assert result.extraction_metadata.provider == "deterministic"
+    assert result.extraction_metadata.reason == "schema_validation"
 
 
 def test_extractor_wraps_provider_failure_without_logging_chunk_text(

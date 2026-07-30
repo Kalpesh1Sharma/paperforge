@@ -1,6 +1,7 @@
 """Playwright-backed PDF rendering for enhanced PaperForge reports."""
 
 import logging
+import re
 import tempfile
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from app.reports.exceptions import (
     ReportRenderingError,
 )
 from app.reports.html_renderer import HTMLRenderer
+from app.reports.presentation_models import PresentationModel
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,11 @@ _PDF_INFO_METADATA = {
     "subject": "AI Research Report",
 }
 _PDF_LANGUAGE = "en"
+_TOC_PAGE_REFERENCE_PATTERN = re.compile(
+    r'(?P<opening><span class="toc-page-reference" data-target="#'
+    r'(?P<anchor>[a-z0-9-]+)" aria-hidden="true">)'
+    r'(?P<value>.*?)(?P<closing></span>)'
+)
 
 
 class PDFRenderer:
@@ -43,6 +50,29 @@ class PDFRenderer:
         resolved_output_path = self._prepare_output_path(output_path)
         html = self._render_html(report)
 
+        return self._render_html_document(html, resolved_output_path)
+
+    def render_presentation(
+        self,
+        presentation: PresentationModel,
+        output_path: Path,
+    ) -> Path:
+        """Render one composed presentation model into a standalone A4 PDF.
+
+        The presentation model is the renderer-facing, immutable report view.
+        It is materialized by :class:`ReportComposer` before reaching this
+        adapter, so this method deliberately delegates all HTML construction to
+        :class:`HTMLRenderer` and shares the existing PDF export lifecycle.
+        """
+        resolved_output_path = self._prepare_output_path(output_path)
+        html = self._render_presentation_html(presentation)
+
+        return self._render_html_document(html, resolved_output_path)
+
+    @classmethod
+    def _render_html_document(cls, html: str, resolved_output_path: Path) -> Path:
+        """Export already-rendered HTML through the shared PDF lifecycle."""
+
         try:
             with tempfile.TemporaryDirectory(
                 prefix=".paperforge-pdf-",
@@ -50,14 +80,20 @@ class PDFRenderer:
             ) as temporary_directory:
                 temporary_path = Path(temporary_directory)
                 html_path = temporary_path / "report.html"
+                layout_pdf_path = temporary_path / "toc-layout.pdf"
                 pdf_path = temporary_path / "report.pdf"
 
-                self._write_html(html_path, html)
-                self._render_pdf(html_path, pdf_path)
-                self._validate_pdf_file(pdf_path)
-                self._write_pdf_metadata(pdf_path)
-                self._validate_pdf_file(pdf_path)
-                self._replace_output(pdf_path, resolved_output_path)
+                cls._write_html(html_path, html)
+                cls._render_html_with_toc_references(
+                    html,
+                    html_path,
+                    layout_pdf_path,
+                    pdf_path,
+                )
+                cls._validate_pdf_file(pdf_path)
+                cls._write_pdf_metadata(pdf_path)
+                cls._validate_pdf_file(pdf_path)
+                cls._replace_output(pdf_path, resolved_output_path)
         except (InvalidResearchReportError, ReportRenderingError):
             raise
         except OSError as exc:
@@ -69,6 +105,99 @@ class PDFRenderer:
 
         logger.info("Rendered PDF report to %s", resolved_output_path)
         return resolved_output_path
+
+    @classmethod
+    def _render_html_with_toc_references(
+        cls,
+        html: str,
+        html_path: Path,
+        layout_pdf_path: Path,
+        pdf_path: Path,
+    ) -> None:
+        """Render once or resolve model-owned TOC links before final export.
+
+        Chromium does not yet implement CSS ``target-counter()``.  When the
+        rendered document contains the existing TOC page-reference markers,
+        a private first pass supplies the physical destinations from the
+        browser-created internal links.  The second pass remains a pure HTML
+        render and keeps ``HTMLRenderer`` as the presentation source of truth.
+        """
+        anchors = cls._toc_anchor_ids(html)
+        if not anchors:
+            cls._render_pdf(html_path, pdf_path)
+            return
+
+        cls._render_pdf(html_path, layout_pdf_path)
+        cls._validate_pdf_file(layout_pdf_path)
+        page_numbers = cls._toc_page_numbers(layout_pdf_path, anchors)
+        rendered_html = cls._with_toc_page_numbers(html, page_numbers)
+
+        if rendered_html == html:
+            layout_pdf_path.replace(pdf_path)
+            return
+
+        cls._write_html(html_path, rendered_html)
+        cls._render_pdf(html_path, pdf_path)
+
+    @staticmethod
+    def _toc_anchor_ids(html: str) -> tuple[str, ...]:
+        """Return ordered, renderer-owned TOC anchors from one HTML document."""
+        return tuple(
+            match.group("anchor")
+            for match in _TOC_PAGE_REFERENCE_PATTERN.finditer(html)
+        )
+
+    @staticmethod
+    def _toc_page_numbers(
+        pdf_path: Path,
+        anchors: tuple[str, ...],
+    ) -> dict[str, int]:
+        """Read physical PDF destinations for the already-rendered TOC links."""
+        expected_anchors = set(anchors)
+        page_numbers: dict[str, int] = {}
+
+        try:
+            with fitz.open(pdf_path) as document:
+                for page in document:
+                    for link in page.get_links():
+                        anchor = str(link.get("nameddest", "")).lstrip("#")
+                        page_index = link.get("page")
+                        if (
+                            anchor in expected_anchors
+                            and isinstance(page_index, int)
+                            and page_index >= 0
+                        ):
+                            page_numbers.setdefault(anchor, page_index + 1)
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.warning("Unable to resolve PDF table-of-contents pages: %s", exc)
+            return {}
+
+        if len(page_numbers) != len(expected_anchors):
+            logger.warning(
+                "Unable to resolve every PDF table-of-contents page reference."
+            )
+            return {}
+        return page_numbers
+
+    @staticmethod
+    def _with_toc_page_numbers(
+        html: str,
+        page_numbers: dict[str, int],
+    ) -> str:
+        """Fill only complete, browser-measured TOC page references."""
+        if not page_numbers:
+            return html
+
+        def replace(match: re.Match[str]) -> str:
+            page_number = page_numbers.get(match.group("anchor"))
+            if page_number is None:
+                return match.group(0)
+            return (
+                f"{match.group('opening')}{page_number}"
+                f"{match.group('closing')}"
+            )
+
+        return _TOC_PAGE_REFERENCE_PATTERN.sub(replace, html)
 
     @staticmethod
     def _prepare_output_path(output_path: Path) -> Path:
@@ -106,6 +235,23 @@ class PDFRenderer:
             raise
         except Exception as exc:
             raise ReportRenderingError("Unable to render the report HTML.") from exc
+
+        if not isinstance(html, str) or not html.strip():
+            raise ReportRenderingError("HTML report rendering returned no document.")
+
+        return html
+
+    @staticmethod
+    def _render_presentation_html(presentation: PresentationModel) -> str:
+        """Delegate composed presentation HTML to the existing HTML renderer."""
+        try:
+            html = HTMLRenderer().render_presentation(presentation)
+        except (InvalidResearchReportError, ReportRenderingError):
+            raise
+        except Exception as exc:
+            raise ReportRenderingError(
+                "Unable to render the composed presentation HTML."
+            ) from exc
 
         if not isinstance(html, str) or not html.strip():
             raise ReportRenderingError("HTML report rendering returned no document.")

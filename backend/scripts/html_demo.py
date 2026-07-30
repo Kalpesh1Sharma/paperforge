@@ -1,5 +1,6 @@
 """Generate a standalone HTML report from the bundled sample PDF."""
 
+from datetime import date
 from pathlib import Path
 import sys
 
@@ -16,6 +17,7 @@ from app.reports import (
     ReportIntelligenceBuilder,
     ResearchSynthesizer,
 )
+from app.reports.composer import ReportComposer
 
 OUTPUT_PATH = PROJECT_ROOT / "outputs" / "report.html"
 
@@ -32,7 +34,12 @@ def main() -> None:
         enhanced_report,
         knowledge_objects,
     )
-    html = HTMLRenderer().render(enhanced_report)
+    presentation = ReportComposer().compose(
+        enhanced_report,
+        source_document=document,
+        generated_on=date.today(),
+    )
+    html = HTMLRenderer().render_presentation(presentation)
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_PATH.write_text(html, encoding="utf-8")

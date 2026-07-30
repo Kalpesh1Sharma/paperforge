@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
+from app.reports.composer import ReportComposer
 from app.reports.enhanced_models import (
     EnhancedResearchReport,
     SynthesisMetadata,
@@ -13,6 +14,7 @@ from app.reports.enhanced_models import (
 )
 from app.reports.exceptions import (
     InvalidResearchReportError,
+    ReportCompositionError,
     ReportRenderingError,
 )
 from app.reports.models import (
@@ -29,6 +31,24 @@ from app.reports.presentation import (
     RenderReference,
     RenderTimelineEvent,
 )
+from app.reports.presentation_models import (
+    AppendixGroup,
+    ConceptCard,
+    EntityCard,
+    EntityPresentationGroup,
+    EvidenceTable,
+    GroupedFinding,
+    InsightCard,
+    PresentationEvidence,
+    PresentationModel,
+    PresentationSection,
+    ReferenceCard,
+    TimelineCard,
+)
+
+
+_PUBLICATION_VERSION = "v0.9.0"
+_UNAVAILABLE = "Not available"
 
 
 class MarkdownRenderer:
@@ -46,16 +66,28 @@ class MarkdownRenderer:
             raise ReportRenderingError("Unable to render the research report.") from exc
 
     def render_enhanced(self, enhanced_report: EnhancedResearchReport) -> str:
-        """Render an immutable AI enhancement over a deterministic base report."""
-        self._validate_enhanced_report(enhanced_report)
+        """Compose and render an immutable enhanced report with default metadata."""
+        try:
+            presentation = ReportComposer().compose(enhanced_report)
+        except InvalidResearchReportError:
+            raise
+        except ReportCompositionError as exc:
+            raise ReportRenderingError(
+                "Unable to compose the enhanced research report."
+            ) from exc
+        return self.render_presentation(presentation)
+
+    def render_presentation(self, presentation: PresentationModel) -> str:
+        """Render one immutable, composer-produced presentation model."""
+        self._validate_presentation_model(presentation)
 
         try:
-            return self._render_enhanced_report(enhanced_report)
+            return self._render_presentation_model(presentation)
         except InvalidResearchReportError:
             raise
         except Exception as exc:
             raise ReportRenderingError(
-                "Unable to render the enhanced research report."
+                "Unable to render the composed research report."
             ) from exc
 
     @classmethod
@@ -103,6 +135,460 @@ class MarkdownRenderer:
             for section in report.sections
         )
         return "\n\n".join(block.rstrip("\n") for block in blocks) + "\n"
+
+    @classmethod
+    def _render_presentation_model(cls, presentation: PresentationModel) -> str:
+        """Render the shared model as a publication-style Markdown report.
+
+        The composer remains the sole owner of report composition.  This method
+        deliberately formats its already-materialized section order, evidence,
+        and anchors without deriving new report content.
+        """
+        reference_numbers = cls._reference_numbers(presentation)
+        blocks = [
+            cls._publication_cover_block(presentation),
+            cls._table_of_contents_block(presentation),
+        ]
+        blocks.extend(
+            cls._presentation_section_block(
+                section,
+                presentation,
+                reference_numbers,
+            )
+            for section in presentation.sections
+        )
+        return "\n\n".join(block.rstrip("\n") for block in blocks) + "\n"
+
+    @classmethod
+    def _publication_cover_block(cls, presentation: PresentationModel) -> str:
+        """Render a restrained publication cover without dashboard-style cards."""
+        cover = presentation.cover
+        prepared_from = cover.filename or _UNAVAILABLE
+        generated_on = (
+            cover.generated_on.isoformat()
+            if cover.generated_on is not None
+            else _UNAVAILABLE
+        )
+        return "\n".join(
+            (
+                f"# {cover.title}",
+                "",
+                f"*PaperForge Research Report - {_PUBLICATION_VERSION}*",
+                "",
+                f"Prepared from document: **{prepared_from}**  ",
+                "Prepared by PaperForge",
+                "",
+                "| Publication detail | Value |",
+                "| --- | --- |",
+                f"| Research domain | {cover.domain} |",
+                f"| Report status | {cover.status} |",
+                f"| Generated | {generated_on} |",
+            )
+        )
+
+    @staticmethod
+    def _table_of_contents_block(presentation: PresentationModel) -> str:
+        """Render the model-owned section projection as a numbered TOC."""
+        entries = tuple(
+            "{number}. [{heading}](#{anchor})".format(
+                number=index,
+                heading=entry.heading,
+                anchor=entry.anchor_id,
+            )
+            for index, entry in enumerate(
+                presentation.table_of_contents.entries,
+                start=1,
+            )
+        )
+        return "## Table of Contents\n\n" + "\n".join(entries)
+
+    @classmethod
+    def _presentation_section_block(
+        cls,
+        section: PresentationSection,
+        presentation: PresentationModel,
+        reference_numbers: dict[int, int],
+    ) -> str:
+        """Render one immutable section in the model's supplied order."""
+        blocks: list[str] = [f"## {section.heading}"]
+
+        if section.key == "document-overview":
+            blocks.extend(section.intro[:1])
+            blocks.append(cls._document_information_block(presentation))
+        else:
+            blocks.extend(section.intro)
+
+        for group in section.finding_groups:
+            blocks.append(
+                cls._presentation_finding_group_block(
+                    group,
+                    heading_level=3,
+                )
+            )
+
+        for group in section.entity_groups:
+            blocks.append(
+                cls._presentation_entity_group_block(group, heading_level=3)
+            )
+
+        if section.concepts:
+            blocks.extend(
+                cls._presentation_concept_entry(
+                    concept,
+                    heading_level=3,
+                )
+                for concept in section.concepts
+            )
+
+        if section.timeline:
+            blocks.extend(
+                cls._presentation_timeline_entry(
+                    event,
+                    heading_level=3,
+                )
+                for event in section.timeline
+            )
+
+        for index, table in enumerate(section.evidence_tables, start=1):
+            blocks.append(cls._presentation_table_block(table, index))
+
+        for appendix_group in section.appendix_groups:
+            blocks.append(
+                cls._presentation_appendix_group_block(
+                    appendix_group,
+                    reference_numbers,
+                )
+            )
+
+        if section.references:
+            blocks.append(
+                "### References\n\n"
+                + cls._publication_reference_list(
+                    section.references,
+                    reference_numbers,
+                )
+            )
+
+        if len(blocks) == 1:
+            empty_text = (
+                "No supplementary material is available."
+                if section.key == "appendix"
+                else "No material is available for this section."
+            )
+            blocks.append(empty_text)
+        return "\n\n".join(blocks)
+
+    @classmethod
+    def _document_information_block(cls, presentation: PresentationModel) -> str:
+        """Render document metadata as a compact publication table."""
+        cover = presentation.cover
+        confidence = cls._confidence_text(cover.mean_confidence)
+        generated_on = (
+            cover.generated_on.isoformat()
+            if cover.generated_on is not None
+            else _UNAVAILABLE
+        )
+        page_count = (
+            str(cover.page_count)
+            if cover.page_count is not None
+            else _UNAVAILABLE
+        )
+        rows = (
+            ("Document", cover.filename or _UNAVAILABLE),
+            ("Research domain", cover.domain),
+            ("Document type", cover.file_type or _UNAVAILABLE),
+            ("Pages", page_count),
+            ("Knowledge objects", str(cover.knowledge_object_count)),
+            ("Evidence sources", str(cover.evidence_source_count)),
+            ("Confidence", confidence),
+            ("Status", cover.status),
+            ("Provider", cover.provider or _UNAVAILABLE),
+            ("Model", cover.model or "Not applicable"),
+            ("Generated", generated_on),
+        )
+        table_rows = "\n".join(
+            f"| {label} | {value} |" for label, value in rows
+        )
+        return "\n".join(
+            (
+                "### Document Information",
+                "",
+                "| Attribute | Details |",
+                "| --- | --- |",
+                table_rows,
+            )
+        )
+
+    @classmethod
+    def _presentation_finding_group_block(
+        cls,
+        group: GroupedFinding,
+        *,
+        heading_level: int,
+    ) -> str:
+        """Render evidence-backed findings as short research discussions."""
+        heading = "#" * heading_level
+        discussions = tuple(
+            cls._presentation_finding_discussion(
+                insight,
+                heading_level=heading_level + 1,
+            )
+            for insight in group.findings
+        )
+        return f"{heading} {group.heading}\n\n" + "\n\n".join(discussions)
+
+    @classmethod
+    def _presentation_finding_discussion(
+        cls,
+        insight: InsightCard,
+        *,
+        heading_level: int,
+    ) -> str:
+        """Format one finding with narrative, evidence, and source citations."""
+        evidence = insight.evidence
+        heading = "#" * heading_level
+        return "\n\n".join(
+            (
+                f"{heading} {insight.title}",
+                insight.summary,
+                cls._evidence_detail_block(
+                    evidence,
+                    importance=insight.importance,
+                ),
+            )
+        )
+
+    @classmethod
+    def _presentation_entity_group_block(
+        cls,
+        group: EntityPresentationGroup,
+        *,
+        heading_level: int,
+    ) -> str:
+        """Render one concise, categorized entity list with citations."""
+        heading = "#" * heading_level
+        return "\n\n".join(
+            (
+                f"{heading} {group.category}",
+                "\n".join(
+                    cls._presentation_entity_item(entity)
+                    for entity in group.entities
+                ),
+            )
+        )
+
+    @classmethod
+    def _presentation_entity_item(cls, entity: EntityCard) -> str:
+        """Render a categorized entity without turning it into a dashboard chip."""
+        evidence = entity.evidence
+        aliases = (
+            f" (also known as: {', '.join(entity.aliases)})"
+            if entity.aliases
+            else ""
+        )
+        details = [f"- **{entity.name}**{aliases}"]
+        evidence_line = cls._compact_evidence_line(evidence)
+        if evidence_line:
+            details.append(f"  - {evidence_line}")
+        return "\n".join(details)
+
+    @classmethod
+    def _presentation_concept_entry(
+        cls,
+        concept: ConceptCard,
+        *,
+        heading_level: int,
+    ) -> str:
+        """Render a concept as a readable, provenance-bearing reference entry."""
+        evidence = concept.evidence
+        heading = "#" * heading_level
+        details = [f"{heading} {concept.concept}", concept.definition]
+        if concept.why_it_matters is not None:
+            details.append(f"**Why it matters:** {concept.why_it_matters}")
+        if concept.related_concepts:
+            details.append(
+                "**Related concepts:** " + ", ".join(concept.related_concepts)
+            )
+        details.append(cls._evidence_detail_block(evidence))
+        return "\n\n".join(details)
+
+    @classmethod
+    def _presentation_timeline_entry(
+        cls,
+        event: TimelineCard,
+        *,
+        heading_level: int,
+    ) -> str:
+        """Render one composer-ordered historical event as a publication entry."""
+        evidence = event.evidence
+        heading = "#" * heading_level
+        return "\n\n".join(
+            (
+                f"{heading} {event.date}",
+                event.description,
+                cls._evidence_detail_block(evidence),
+            )
+        )
+
+    @staticmethod
+    def _presentation_table_block(
+        table: EvidenceTable,
+        ordinal: int,
+        *,
+        heading_level: int = 3,
+    ) -> str:
+        """Render one deterministic visible evidence table with a stable caption."""
+        columns = tuple(table.columns)
+        header = "| " + " | ".join(columns) + " |"
+        divider = "| " + " | ".join("---" for _ in columns) + " |"
+        rows = tuple(
+            "| "
+            + " | ".join(
+                str(value).replace("\r", " ").replace("\n", " ").replace(
+                    "|",
+                    "\\|",
+                )
+                for value in row
+            )
+            + " |"
+            for row in table.rows
+        )
+        heading = "#" * heading_level
+        return "{heading} Table {ordinal}. {title}\n\n{table}".format(
+            heading=heading,
+            ordinal=ordinal,
+            title=table.title,
+            table="\n".join((header, divider, *rows)),
+        )
+
+    @classmethod
+    def _presentation_appendix_group_block(
+        cls,
+        appendix_group: AppendixGroup,
+        reference_numbers: dict[int, int],
+    ) -> str:
+        """Render supplemental material with publication-style hierarchy."""
+        blocks = [f"### {appendix_group.heading}"]
+        if appendix_group.findings:
+            blocks.append(
+                "\n\n".join(
+                    cls._presentation_finding_discussion(
+                        finding,
+                        heading_level=4,
+                    )
+                    for finding in appendix_group.findings
+                )
+            )
+        if appendix_group.concepts:
+            blocks.append(
+                "\n\n".join(
+                    cls._presentation_concept_entry(
+                        concept,
+                        heading_level=4,
+                    )
+                    for concept in appendix_group.concepts
+                )
+            )
+        for entity_group in appendix_group.entities:
+            blocks.append(
+                cls._presentation_entity_group_block(
+                    entity_group,
+                    heading_level=4,
+                )
+            )
+        if appendix_group.references:
+            blocks.append(
+                cls._publication_reference_list(
+                    appendix_group.references,
+                    reference_numbers,
+                )
+            )
+        for index, table in enumerate(appendix_group.evidence_tables, start=1):
+            blocks.append(
+                cls._presentation_table_block(
+                    table,
+                    index,
+                    heading_level=4,
+                )
+            )
+        return "\n\n".join(blocks)
+
+    @classmethod
+    def _evidence_detail_block(
+        cls,
+        evidence: PresentationEvidence,
+        *,
+        importance: str | None = None,
+    ) -> str:
+        """Format a compact evidence statement from an immutable evidence view."""
+        details: list[str] = []
+        if importance is not None:
+            details.append(f"Importance: {importance}")
+        confidence_label = evidence.confidence_label
+        if confidence_label is not None:
+            details.append(f"Confidence: {confidence_label}")
+        source_count = evidence.source_count
+        if source_count:
+            details.append(
+                "Evidence: {count} {label}".format(
+                    count=source_count,
+                    label="source" if source_count == 1 else "sources",
+                )
+            )
+        labels = evidence.source_labels
+        if labels:
+            details.append("Sources: " + ", ".join(labels))
+        return "*" + "; ".join(details) + "*" if details else ""
+
+    @classmethod
+    def _compact_evidence_line(cls, evidence: PresentationEvidence) -> str:
+        """Return inline entity provenance without repeating a card-style block."""
+        details: list[str] = []
+        confidence_label = evidence.confidence_label
+        if confidence_label is not None:
+            details.append(f"Confidence: {confidence_label}")
+        labels = evidence.source_labels
+        if labels:
+            details.append("Sources: " + ", ".join(labels))
+        return "; ".join(details)
+
+    @staticmethod
+    def _confidence_text(confidence: float | None) -> str:
+        """Format optional raw cover confidence without inventing a value."""
+        if confidence is None:
+            return _UNAVAILABLE
+        return f"{round(confidence * 100)}%"
+
+    @staticmethod
+    def _reference_numbers(presentation: PresentationModel) -> dict[int, int]:
+        """Assign stable publication-reference numbers in model section order."""
+        numbers: dict[int, int] = {}
+        next_number = 1
+        for section in presentation.sections:
+            for reference in section.references:
+                numbers[id(reference)] = next_number
+                next_number += 1
+            for appendix_group in section.appendix_groups:
+                for reference in appendix_group.references:
+                    numbers[id(reference)] = next_number
+                    next_number += 1
+        return numbers
+
+    @classmethod
+    def _publication_reference_list(
+        cls,
+        references: tuple[ReferenceCard, ...],
+        reference_numbers: dict[int, int],
+    ) -> str:
+        """Render numbered reference entries with source labels, never UUIDs."""
+        return "\n".join(
+            "{number}. {reference}{citation}".format(
+                number=reference_numbers[id(reference)],
+                reference=reference.reference,
+                citation=cls._source_suffix(reference.evidence.source_labels),
+            )
+            for reference in references
+        )
 
     @classmethod
     def _render_enhanced_report(cls, enhanced_report: EnhancedResearchReport) -> str:
@@ -405,6 +891,26 @@ class MarkdownRenderer:
         if not items:
             return f"## {heading}"
         return f"## {heading}\n\n" + "\n".join(items)
+
+    @staticmethod
+    def _validate_presentation_model(presentation: object) -> None:
+        """Reject malformed or validation-bypassed presentation models."""
+        if not isinstance(presentation, PresentationModel):
+            raise InvalidResearchReportError(
+                "Input must be a PresentationModel instance."
+            )
+        if getattr(presentation, "__pydantic_extra__", None):
+            raise InvalidResearchReportError(
+                "PresentationModel must not contain extra fields."
+            )
+        try:
+            PresentationModel.model_validate(
+                presentation.model_dump(mode="python", warnings="error")
+            )
+        except (AttributeError, TypeError, ValidationError, ValueError) as exc:
+            raise InvalidResearchReportError(
+                "PresentationModel failed structural validation."
+            ) from exc
 
     @classmethod
     def _validate_report(cls, report: object) -> None:

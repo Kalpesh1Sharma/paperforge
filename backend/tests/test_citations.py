@@ -166,11 +166,16 @@ def test_markdown_cites_each_claim_with_source_evidence_order() -> None:
 
     markdown = MarkdownRenderer().render_enhanced(report)
 
-    assert "**Primary finding**: A supported primary claim. [Source 2, Source 1]" in markdown
-    assert "**2026**: Extracted date: 2026. [Source 2]" in markdown
-    assert "*Sources: Source 2*" in markdown
-    assert "**Appendix finding**: A supported appendix claim. [Source 1]" in markdown
-    assert "- **Source 1**\n  - Second source" in markdown
-    assert "- **Source 2**\n  - First source" in markdown
+    assert "#### Primary finding" in markdown
+    assert "A supported primary claim." in markdown
+    assert "*Evidence: 2 sources; Sources: Source 2, Source 1*" in markdown
+    assert "### 2026" in markdown
+    assert "Document records the date 2026." in markdown
+    assert "#### Thematic section" in markdown
+    assert "A supported thematic claim." in markdown
+    assert "#### Appendix finding" in markdown
+    assert "A supported appendix claim." in markdown
+    assert "1. Second source [Source 1]" in markdown
+    assert "2. First source [Source 2]" in markdown
     assert str(_FIRST) not in markdown
     assert str(_SECOND) not in markdown

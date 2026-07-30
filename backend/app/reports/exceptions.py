@@ -13,5 +13,9 @@ class ReportSynthesisError(ReportError):
     """Raised when knowledge objects cannot be synthesized into a report."""
 
 
+class ReportCompositionError(ReportError):
+    """Raised when a validated report cannot be composed for presentation."""
+
+
 class ReportRenderingError(ReportError):
     """Raised when a validated report cannot be rendered as Markdown."""
