@@ -204,8 +204,8 @@ def test_html_renderer_produces_stable_self_contained_document() -> None:
     assert 'class="section-lead"' in first
     assert 'class="confidence-meter" aria-hidden="true"' in first
     assert 'class="status-badge">AI-enhanced</span>' in first
-    assert "Source-backed observations are grouped here for focused review." in first
-    assert "Source-derived entities retained for this category." in first
+    assert "The findings below organize technical material for focused review." in first
+    assert "Entities relevant to this report are listed by category." in first
     assert "<dt>Generated</dt><dd>Not available</dd>" in first
     assert '<link rel="stylesheet"' not in first
     assert "<script" not in first.lower()

@@ -169,6 +169,10 @@ class GroqKnowledgeProvider(BaseKnowledgeProvider):
 
         if status_code == 401:
             return GroqAuthenticationError("Groq authentication failed.")
+        if GroqKnowledgeProvider._is_json_validation_status_error(error):
+            return MalformedGroqJsonError(
+                "Groq response failed provider-side JSON validation."
+            )
         if GroqKnowledgeProvider._is_rate_limit_status_error(error):
             return GroqRateLimitError("Groq request was rate limited.")
         if isinstance(status_code, int) and 500 <= status_code <= 599:
@@ -177,6 +181,19 @@ class GroqKnowledgeProvider(BaseKnowledgeProvider):
             )
 
         return GroqProviderError("Groq request failed.")
+
+    @staticmethod
+    def _is_json_validation_status_error(error: APIStatusError) -> bool:
+        """Recognize Groq's explicit provider-side JSON validation failure."""
+        body = getattr(error, "body", None)
+        if not isinstance(body, Mapping):
+            return False
+
+        details = body.get("error")
+        return (
+            isinstance(details, Mapping)
+            and details.get("code") == "json_validate_failed"
+        )
 
     @staticmethod
     def _is_rate_limit_status_error(error: APIStatusError) -> bool:

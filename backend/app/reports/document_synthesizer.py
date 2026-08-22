@@ -222,6 +222,14 @@ class DocumentSynthesizer:
                 message="Groq document synthesis service was unreachable.",
             )
         except APIStatusError as exc:
+            if self._is_json_validation_status_error(exc):
+                return self._fallback_report(
+                    report,
+                    refinement_plan,
+                    started_at,
+                    reason="malformed_response",
+                    message="Groq document synthesis returned an invalid JSON response.",
+                )
             if self._is_rate_limit_status_error(exc):
                 return self._fallback_report(
                     report,
@@ -299,6 +307,19 @@ class DocumentSynthesizer:
             not isinstance(status_code, bool)
             and isinstance(status_code, int)
             and 500 <= status_code <= 599
+        )
+
+    @staticmethod
+    def _is_json_validation_status_error(error: APIStatusError) -> bool:
+        """Recognize Groq's explicit provider-side JSON validation failure."""
+        body = getattr(error, "body", None)
+        if not isinstance(body, Mapping):
+            return False
+
+        details = body.get("error")
+        return (
+            isinstance(details, Mapping)
+            and details.get("code") == "json_validate_failed"
         )
 
     @staticmethod

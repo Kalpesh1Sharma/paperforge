@@ -211,6 +211,36 @@ def test_rate_limit_status_body_is_recoverable(
     assert len(completions.calls) == 1
 
 
+@pytest.mark.parametrize(
+    ("body", "provider_error", "recoverable"),
+    [
+        (
+            {"error": {"code": "json_validate_failed"}},
+            MalformedGroqJsonError,
+            True,
+        ),
+        ({"error": {"code": "invalid_request"}}, GroqProviderError, False),
+    ],
+)
+def test_json_validation_status_error_is_the_only_recoverable_bad_request(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_groq: None,
+    body: object,
+    provider_error: type[Exception],
+    recoverable: bool,
+) -> None:
+    """Only Groq's explicit JSON validation body is a recoverable HTTP 400."""
+    monkeypatch.setattr(groq_provider, "APIStatusError", FakeApiStatusError)
+    completions = FakeCompletions(error=FakeApiStatusError(400, body=body))
+    _install_client(monkeypatch, completions)
+
+    with pytest.raises(provider_error) as captured:
+        GroqKnowledgeProvider().extract(_chunk())
+
+    assert isinstance(captured.value, RecoverableProviderError) is recoverable
+    assert len(completions.calls) == 1
+
+
 def test_unexpected_programming_error_is_not_reclassified_as_transient(
     monkeypatch: pytest.MonkeyPatch,
     configured_groq: None,

@@ -539,8 +539,9 @@ def test_composer_curates_artifacts_and_duplicate_supported_sections_once() -> N
     assert tuple(entity.name for entity in overview.entity_groups[0].entities) == (
         "PaperForge",
     )
-    assert tuple(concept.concept for concept in concepts.concepts) == (
-        "Evidence: Information that supports a source-backed claim.",
+    assert tuple(concept.concept for concept in concepts.concepts) == ("Evidence",)
+    assert concepts.concepts[0].definition == (
+        "Information that supports a source-backed claim."
     )
     assert tuple(card.title for card in key_insights) == ("Single supported fact",)
     assert technical == ()
@@ -598,6 +599,5 @@ def test_event_and_terminal_punctuation_deduplication_are_conservative() -> None
     assert tuple(card.title for card in cards) == (
         "PDF release",
         "Page explanation",
-        "Document length",
     )
     assert finding_statistic.deduplicated == 1

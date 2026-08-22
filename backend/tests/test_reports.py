@@ -584,8 +584,10 @@ def test_enhanced_renderer_uses_publication_hierarchy_for_shared_presentation() 
     assert "| Document type |" not in cover
     assert "| Knowledge objects analyzed |" not in cover
     assert "### Document Information" in markdown
-    assert f"Domain: {presentation.cover.domain}." in markdown
-    assert "Source type: Not available." not in markdown
+    assert (
+        "This overview establishes the document's subject area and the "
+        "available publication details."
+    ) in markdown
     assert "#### Latency benchmark results" in markdown
     assert "#### Finding 1:" not in markdown
     assert "Importance: HIGH" in markdown
@@ -893,7 +895,7 @@ def test_enhanced_presentation_groups_findings_and_calibrates_confidence() -> No
     assert 60 <= int(second_label.removesuffix("%")) <= 100
     assert int(first_label.removesuffix("%")) < int(second_label.removesuffix("%"))
     _assert_markdown_presentation_contract(markdown)
-    assert "### Selected Insights" in markdown
+    assert "### Principal Findings" in markdown
     assert "PDF was introduced in 1993" in markdown
     assert "ISO standard defines PDF" in markdown
     key_insights = next(
@@ -901,7 +903,7 @@ def test_enhanced_presentation_groups_findings_and_calibrates_confidence() -> No
         for section in presentation.sections
         if section.anchor_id == "key-insights"
     )
-    assert key_insights.finding_groups[0].heading == "Selected Insights"
+    assert key_insights.finding_groups[0].heading == "Principal Findings"
 
 
 def test_enhanced_presentation_uses_evidence_richness_for_equal_confidence() -> None:

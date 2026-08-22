@@ -73,6 +73,11 @@ _PAGE_COUNT_STATEMENT_PATTERN = re.compile(
 _LABELED_METRIC_PATTERN = re.compile(
     r"^\s*([A-Za-z][A-Za-z0-9 /()#._-]{1,80}?)\s*(?::|=|[-—])\s*(\S(?:.*\S)?)\s*$"
 )
+_LEGACY_DEFINITION_PATTERN = re.compile(
+    r"^\s*(?P<concept>[A-Za-z][A-Za-z0-9 /()#+._-]{0,100}?)"
+    r"\s*(?::|\s+-\s+|\s+—\s+|\s*=\s*)\s*"
+    r"(?P<definition>\S(?:.*\S)?)\s*$"
+)
 
 _IMPORTANCE_RANK = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
 _PRIMARY_FINDING_HEADING = "Principal Findings"
@@ -1661,16 +1666,20 @@ class ReportComposer:
             return tuple(candidates)
 
         for index, rendered in enumerate(context.definitions):
+            concept, definition = cls._legacy_definition_parts(
+                rendered.concept,
+                rendered.definition,
+            )
             candidates.append(
                 _ConceptCandidate(
                     source_index=index,
                     card=ConceptCard(
                         key=f"concept-{index + 1}",
-                        concept=rendered.concept,
-                        definition=rendered.definition,
+                        concept=concept,
+                        definition=definition,
                         related_concepts=rendered.related_concepts,
                         why_it_matters=cls._why_it_matters(
-                            rendered.concept,
+                            concept,
                             finding_cards,
                         ),
                         evidence=cls._evidence(
@@ -1685,6 +1694,25 @@ class ReportComposer:
                 )
             )
         return tuple(candidates)
+
+    @staticmethod
+    def _legacy_definition_parts(
+        concept: str,
+        definition: str,
+    ) -> tuple[str, str]:
+        """Separate explicit legacy ``Concept: explanation`` strings for display.
+
+        The deterministic report model stores legacy definitions as one string.
+        This presentation-only adapter recognizes only unambiguous labelled
+        forms, retaining the original source text unchanged when it cannot
+        safely identify a concept.
+        """
+        if concept != definition:
+            return concept, definition
+        matched = _LEGACY_DEFINITION_PATTERN.fullmatch(concept)
+        if matched is None:
+            return concept, definition
+        return matched.group("concept"), matched.group("definition")
 
     @classmethod
     def _entity_groups(

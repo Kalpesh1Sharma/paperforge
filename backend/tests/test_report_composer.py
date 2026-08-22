@@ -190,7 +190,9 @@ def test_composer_routes_key_insights_concepts_and_secondary_content() -> None:
     assert len(key_insights) == 8
     assert any(card.key == "finding-1" for card in technical)
     assert any(card.key == "supported-section-1" for card in technical)
-    assert len(concepts) == 6
+    # Label-only values such as ``Concept 1: Definition 1`` remain supporting
+    # material rather than becoming a primary explanatory concept card.
+    assert concepts == ()
     appendix_findings = tuple(
         card
         for group in appendix.appendix_groups
@@ -202,7 +204,9 @@ def test_composer_routes_key_insights_concepts_and_secondary_content() -> None:
         for card in group.concepts
     )
     assert tuple(card.key for card in appendix_findings) == ("appendix-finding-1",)
-    assert tuple(card.key for card in appendix_concepts) == ("concept-7",)
+    assert tuple(card.key for card in appendix_concepts) == tuple(
+        f"concept-{index}" for index in range(1, 8)
+    )
     assert all(
         card.evidence.supporting_chunk_ids
         and card.evidence.source_labels
@@ -221,7 +225,10 @@ def test_composer_caps_abstract_and_removes_duplicate_summary_paragraphs() -> No
 
     assert len(abstract) == 1
     assert len(abstract[0].split()) == 180
-    assert executive_summary == (long_summary,)
+    assert executive_summary == (
+        "This summary presents the document's central themes in concise form.",
+        long_summary,
+    )
 
 
 def test_composer_preserves_intelligence_source_provenance() -> None:

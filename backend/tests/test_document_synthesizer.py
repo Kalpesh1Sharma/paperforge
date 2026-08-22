@@ -685,7 +685,34 @@ def test_token_limit_status_failure_uses_a_refined_rate_limit_fallback(
     _assert_fallback(enhanced, report, plan, reason="rate_limit")
 
 
-@pytest.mark.parametrize("status_code", [401, 403, 404, 413])
+def test_json_validation_status_failure_uses_refined_malformed_response_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_groq: None,
+) -> None:
+    """Groq's explicit JSON validation error uses the existing safe fallback."""
+    class JsonValidationFailure(Exception):
+        """A Groq-shaped provider-side JSON validation status error double."""
+
+        status_code = 400
+        body = {"error": {"code": "json_validate_failed"}}
+
+    chunk_id = uuid4()
+    report = _report(chunk_id)
+    knowledge = (_knowledge(chunk_id),)
+    plan = _plan(report, knowledge)
+    monkeypatch.setattr(
+        document_synthesizer, "APIStatusError", JsonValidationFailure
+    )
+    completions = FakeCompletions(error=JsonValidationFailure("HTTP 400"))
+    _install_client(monkeypatch, completions)
+
+    enhanced = document_synthesizer.DocumentSynthesizer().synthesize(report, knowledge)
+
+    _assert_fallback(enhanced, report, plan, reason="malformed_response")
+    assert len(completions.calls) == 1
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 403, 404, 413])
 def test_non_transient_status_failures_do_not_fallback(
     monkeypatch: pytest.MonkeyPatch,
     configured_groq: None,
@@ -697,6 +724,7 @@ def test_non_transient_status_failures_do_not_fallback(
 
         def __init__(self, value: int) -> None:
             self.status_code = value
+            self.body = {"error": {"code": "invalid_request"}}
             super().__init__(f"HTTP {value}")
 
     chunk_id = uuid4()
