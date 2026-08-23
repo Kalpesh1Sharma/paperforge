@@ -1,0 +1,12 @@
+    <section class="report-section report-summary" aria-labelledby="executive-summary-heading">
+      <h2 id="executive-summary-heading">Executive Summary</h2>
+{% if summary_paragraphs %}
+      <div class="prose">
+{% for paragraph in summary_paragraphs %}
+        <p>{{ paragraph }}</p>
+{% endfor %}
+      </div>
+{% else %}
+      <p class="empty-state">{{ empty_state }}</p>
+{% endif %}
+    </section>

@@ -1,6 +1,13 @@
 backend/.env
 backend/uploads/
+backend/reports/
+backend/outputs/
 __pycache__/
 *.py[cod]
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/*.tsbuildinfo
+**/.pytest-*/
 
 **/.env

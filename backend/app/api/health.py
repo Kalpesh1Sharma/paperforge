@@ -1,11 +1,5 @@
-from fastapi import APIRouter
+"""Backward-compatible import surface for the health router."""
 
-router = APIRouter(tags=["Health"])
+from app.api.routes.health import router
 
-@router.get("/health")
-def health():
-    return {
-        "status": "healthy",
-        "service": "PaperForge",
-        "version": "0.1.0"
-    }
+__all__ = ["router"]

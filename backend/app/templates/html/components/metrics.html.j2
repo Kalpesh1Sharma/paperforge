@@ -1,0 +1,12 @@
+    <section class="report-section" aria-labelledby="metrics-heading">
+      <h2 id="metrics-heading">Metrics</h2>
+{% if render_context.metrics %}
+      <ul class="metric-list" role="list">
+{% for metric in render_context.metrics %}
+        <li>{{ metric }}</li>
+{% endfor %}
+      </ul>
+{% else %}
+      <p class="empty-state">{{ empty_state }}</p>
+{% endif %}
+    </section>

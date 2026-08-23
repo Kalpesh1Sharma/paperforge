@@ -1,0 +1,10 @@
+import type { ReportMetadata, ReviewState } from "../api/types";
+import { reportUrl } from "../api/client";
+import { ReportPreview } from "./ReportPreview";
+import { ReviewPanel } from "./ReviewPanel";
+
+type Props = { id: string; metadata: ReportMetadata; review: ReviewState | null; busy: boolean; onStart: () => void; onApprove: (id: string) => void; onReject: (id: string, feedback?: string) => void; onRefresh: () => void; onNewReport: () => void };
+export function ReportWorkspace({ id, metadata, review, busy, onStart, onApprove, onReject, onRefresh, onNewReport }: Props) {
+  const sources = metadata.documents ?? (metadata.document ? [metadata.document] : []);
+  return <main className="workspace"><div className="workspace-main"><div className="ready"><span>Report ready</span><small>{id}</small><button className="text-button" onClick={onNewReport}>New report</button></div><ReportPreview reportId={id} /></div><aside className="sidebar"><section><span className="eyebrow">Sources · {sources.length}</span><h2>Evidence inputs</h2>{sources.map((source) => <div className="source" key={source.filename}><strong>{source.filename}</strong><small>{source.page_count ? `${source.page_count} pages · ` : ""}{source.word_count.toLocaleString()} words</small></div>)}<p className="subdued">Findings retain source-level provenance inside the report.</p></section><section><span className="eyebrow">Exports</span><div className="downloads"><a href={reportUrl(id, "pdf")} target="_blank" rel="noopener noreferrer">PDF</a><a href={reportUrl(id, "markdown")} target="_blank" rel="noopener noreferrer">Markdown</a><a href={reportUrl(id, "html")} target="_blank" rel="noopener noreferrer">HTML</a></div><p className="subdued">{metadata.generation.provider} · {metadata.generation.fallback ? "deterministic fallback" : "grounded synthesis"}</p></section><ReviewPanel review={review} busy={busy} onStart={onStart} onApprove={onApprove} onReject={onReject} onRefresh={onRefresh} docxUrl={reportUrl(id, "docx")} /></aside></main>;
+}

@@ -1,0 +1,1 @@
+:root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #17212b; background: #f5f6f4; font-synthesis: none; } * { box-sizing: border-box; } body { margin: 0; } button, input, textarea { font: inherit; } button, a { cursor: pointer; } button:focus-visible, a:focus-visible, textarea:focus-visible { outline: 3px solid #4c78a8; outline-offset: 2px; }

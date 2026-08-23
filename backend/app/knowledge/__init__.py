@@ -7,6 +7,7 @@ from app.knowledge.exceptions import (
     GroqProviderError,
     GroqRateLimitError,
     GroqSchemaValidationError,
+    GroqTemporaryServiceError,
     GroqTimeoutError,
     InvalidKnowledgeObjectError,
     KnowledgeError,
@@ -15,19 +16,23 @@ from app.knowledge.exceptions import (
     MissingGroqApiKeyError,
     MissingGroqModelError,
     ProviderError,
+    RecoverableGroqProviderError,
+    RecoverableProviderError,
     UnexpectedGroqResponseError,
 )
 from app.knowledge.extractor import KnowledgeExtractor
-from app.knowledge.models import KnowledgeObject
+from app.knowledge.models import KnowledgeExtractionMetadata, KnowledgeObject
 from app.knowledge.pipeline import KnowledgePipeline
 from app.knowledge.providers import (
     BaseKnowledgeProvider,
+    DeterministicKnowledgeProvider,
     GroqKnowledgeProvider,
     MockKnowledgeProvider,
 )
 
 __all__ = [
     "BaseKnowledgeProvider",
+    "DeterministicKnowledgeProvider",
     "GroqAuthenticationError",
     "GroqConfigurationError",
     "GroqKnowledgeProvider",
@@ -35,11 +40,13 @@ __all__ = [
     "GroqProviderError",
     "GroqRateLimitError",
     "GroqSchemaValidationError",
+    "GroqTemporaryServiceError",
     "GroqTimeoutError",
     "InvalidKnowledgeObjectError",
     "KnowledgeError",
     "KnowledgeExtractionError",
     "KnowledgeExtractor",
+    "KnowledgeExtractionMetadata",
     "KnowledgeObject",
     "KnowledgePipeline",
     "MalformedGroqJsonError",
@@ -47,5 +54,7 @@ __all__ = [
     "MissingGroqModelError",
     "MockKnowledgeProvider",
     "ProviderError",
+    "RecoverableGroqProviderError",
+    "RecoverableProviderError",
     "UnexpectedGroqResponseError",
 ]

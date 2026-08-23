@@ -7,6 +7,12 @@ from pydantic import ValidationError
 
 from app.knowledge import KnowledgeObject
 from app.reports import (
+    ConsolidatedDefinition,
+    ConsolidatedReference,
+    EnhancedResearchReport,
+    EnrichedFinding,
+    EntityGroup,
+    IntelligentTimelineEvent,
     Finding,
     InvalidResearchReportError,
     MarkdownRenderer,
@@ -15,7 +21,22 @@ from app.reports import (
     ReportSynthesisError,
     ResearchReport,
     ResearchSynthesizer,
+    ReportIntelligence,
+    NormalizedEntity,
+    SynthesisSourceEvidence,
+    SynthesizedSection,
+    SynthesisMetadata,
     TimelineEvent,
+)
+from app.reports.presentation import EnhancedReportRenderContext
+from app.reports.composer import ReportComposer
+from app.reports.presentation_models import (
+    AppendixGroup,
+    EvidenceTable,
+    HiddenPresentationData,
+    InsightCard,
+    PRESENTATION_SECTION_SPECS,
+    PresentationEvidence,
 )
 
 
@@ -62,6 +83,34 @@ def _report(
         references=references,
         sections=sections,
     )
+
+
+def _assert_markdown_presentation_contract(markdown: str) -> None:
+    """Assert the ordered publication hierarchy projected from actual sections."""
+    assert markdown.startswith("# Research Report\n\n")
+    assert "*PaperForge Research Report - v0.12.0*" in markdown
+    assert "## Cover Page" not in markdown
+    assert "Prepared from document: **Not available**" in markdown
+    assert "Prepared by PaperForge" in markdown
+    assert "| Publication detail | Value |" in markdown
+    assert "## Table of Contents" in markdown
+
+    section_markers = tuple(
+        f"## {heading}" for _, heading, _ in PRESENTATION_SECTION_SPECS
+        if f"## {heading}" in markdown
+    )
+    positions = tuple(markdown.index(marker) for marker in section_markers)
+
+    assert positions == tuple(sorted(positions))
+    for index, (_, heading, anchor_id) in enumerate(
+        tuple(
+            spec
+            for spec in PRESENTATION_SECTION_SPECS
+            if f"## {spec[1]}" in markdown
+        ),
+        start=1,
+    ):
+        assert f"{index}. [{heading}](#{anchor_id})" in markdown
 
 
 def test_report_models_are_strict_immutable_and_forbid_extra_fields() -> None:
@@ -329,3 +378,695 @@ def test_renderer_wraps_unexpected_rendering_errors(
 
     with pytest.raises(ReportRenderingError):
         MarkdownRenderer().render(_report())
+
+
+def test_renderer_renders_enhanced_overlay_without_changing_base_rendering() -> None:
+    chunk_id = uuid4()
+    base_report = _report(
+        findings=(
+            Finding(
+                title="Finding 1",
+                description="Deterministic source fact.",
+                supporting_chunk_ids=(chunk_id,),
+            ),
+        ),
+        important_entities=("PaperForge",),
+        important_definitions=("Evidence means support.",),
+        important_metrics=("Source confidence: 95%",),
+        references=("https://example.com",),
+    )
+    enhanced_report = EnhancedResearchReport(
+        base_report=base_report,
+        executive_summary=(
+            "Enhanced summary paragraph one.\n\n"
+            "Enhanced summary paragraph two."
+        ),
+        findings=(
+            Finding(
+                title="Grouped Finding",
+                description="Enhanced grounded finding.",
+                supporting_chunk_ids=(chunk_id,),
+            ),
+        ),
+        sections=(
+            SynthesizedSection(
+                heading="Professional Experience",
+                content="Enhanced grounded section.",
+                supporting_chunk_ids=(chunk_id,),
+            ),
+        ),
+        synthesis_metadata=SynthesisMetadata(
+            provider="groq",
+            model="test-model",
+            elapsed_ms=0.0,
+            successful=True,
+        ),
+    )
+    renderer = MarkdownRenderer()
+    presentation = ReportComposer().compose(enhanced_report)
+
+    deterministic_markdown = renderer.render(base_report)
+    enhanced_markdown = renderer.render_enhanced(enhanced_report)
+
+    assert "Summary." in deterministic_markdown
+    assert "Deterministic source fact." in deterministic_markdown
+    assert enhanced_markdown == renderer.render_presentation(presentation)
+    _assert_markdown_presentation_contract(enhanced_markdown)
+    assert "Enhanced summary paragraph one." in enhanced_markdown
+    assert "Enhanced summary paragraph two." in enhanced_markdown
+    assert "Grouped Finding" in enhanced_markdown
+    assert "Deterministic source fact." not in enhanced_markdown
+    assert "PaperForge" in enhanced_markdown
+    assert "Evidence means support." in enhanced_markdown
+    assert "95%" in enhanced_markdown
+    assert "https://example.com" in enhanced_markdown
+    assert "[Source 1]" in enhanced_markdown
+    assert str(chunk_id) not in enhanced_markdown
+    assert "### General" not in enhanced_markdown
+    assert "Professional Experience" in enhanced_markdown
+    assert "Enhanced grounded section." in enhanced_markdown
+    assert "## Appendix" in enhanced_markdown
+    assert "### Supporting Statistics" not in enhanced_markdown
+    assert "Composition Details" not in enhanced_markdown
+
+
+def test_enhanced_renderer_accepts_a_nonblank_fallback_summary() -> None:
+    """Markdown presentation is provider-agnostic for valid overlays."""
+    chunk_id = uuid4()
+    base_report = _report(
+        findings=(
+            Finding(
+                title="Finding 1",
+                description="Deterministic source fact.",
+                supporting_chunk_ids=(chunk_id,),
+            ),
+        ),
+    )
+    fallback = EnhancedResearchReport(
+        base_report=base_report,
+        executive_summary="Deterministic fallback summary.",
+        findings=base_report.findings,
+        sections=(),
+        synthesis_metadata=SynthesisMetadata(
+            provider="fallback",
+            model=None,
+            elapsed_ms=0.0,
+            successful=True,
+            enhanced=False,
+            fallback=True,
+            reason="connection",
+            source_evidence=(
+                SynthesisSourceEvidence(
+                    chunk_id=chunk_id,
+                    confidence=1.0,
+                    references=(),
+                ),
+            ),
+        ),
+    )
+
+    markdown = MarkdownRenderer().render_enhanced(fallback)
+
+    _assert_markdown_presentation_contract(markdown)
+    assert "Deterministic fallback summary." in markdown
+    assert "Deterministic source fact." in markdown
+    assert "| Provider | fallback |" not in markdown
+    assert "| Model | Not applicable |" not in markdown
+    assert "Sources: Source 1" in markdown
+    assert str(chunk_id) not in markdown
+
+
+def test_enhanced_renderer_uses_publication_hierarchy_for_shared_presentation() -> None:
+    """Composed Markdown reads as a report, while retaining source-backed data."""
+    chunk_id = uuid4()
+    base_report = _report(
+        findings=(
+            Finding(
+                title="Latency benchmark results",
+                description="The source records a latency benchmark improvement.",
+                supporting_chunk_ids=(chunk_id,),
+            ),
+        ),
+        timeline=(
+            TimelineEvent(
+                date="2024",
+                description="The benchmark was published in 2024.",
+                supporting_chunk_ids=(chunk_id,),
+            ),
+        ),
+        references=("Publication source",),
+    )
+    enhanced = EnhancedResearchReport(
+        base_report=base_report,
+        executive_summary=(
+            "The document reports a source-backed latency benchmark.\n\n"
+            "The result is presented with supporting evidence."
+        ),
+        findings=base_report.findings,
+        sections=(),
+        synthesis_metadata=SynthesisMetadata(
+            provider="groq",
+            model="test-model",
+            elapsed_ms=0.0,
+            successful=True,
+            source_evidence=(
+                SynthesisSourceEvidence(
+                    chunk_id=chunk_id,
+                    confidence=0.9,
+                    references=("Publication source",),
+                ),
+            ),
+        ),
+        report_intelligence=ReportIntelligence(
+            definitions=(
+                ConsolidatedDefinition(
+                    concept="Latency",
+                    definition="Latency is the time required to receive a response.",
+                    related_concepts=("Performance",),
+                    supporting_chunk_ids=(chunk_id,),
+                    references=("Publication source",),
+                    confidence=0.9,
+                ),
+            ),
+            timeline=(
+                IntelligentTimelineEvent(
+                    date="2024",
+                    description="The benchmark was published in 2024.",
+                    supporting_chunk_ids=(chunk_id,),
+                    references=("Publication source",),
+                    confidence=0.9,
+                ),
+            ),
+            findings=(
+                EnrichedFinding(
+                    source_kind="finding",
+                    source_index=0,
+                    title="Latency benchmark results",
+                    summary="The source records a latency benchmark improvement.",
+                    supporting_chunk_ids=(chunk_id,),
+                    references=("Publication source",),
+                    confidence=0.9,
+                    importance="high",
+                ),
+            ),
+            references=(
+                ConsolidatedReference(
+                    reference="Publication source",
+                    supporting_chunk_ids=(chunk_id,),
+                ),
+            ),
+        ),
+    )
+    before = enhanced.model_dump(mode="python")
+    presentation = ReportComposer().compose(enhanced)
+
+    markdown = MarkdownRenderer().render_presentation(presentation)
+
+    assert enhanced.model_dump(mode="python") == before
+    _assert_markdown_presentation_contract(markdown)
+    cover, _ = markdown.split("## Table of Contents", maxsplit=1)
+    assert f"| Research domain | {presentation.cover.domain} |" in cover
+    assert "| Document type |" not in cover
+    assert "| Knowledge objects analyzed |" not in cover
+    assert "### Document Information" in markdown
+    assert (
+        "This overview establishes the document's subject area and the "
+        "available publication details."
+    ) in markdown
+    assert "#### Latency benchmark results" in markdown
+    assert "#### Finding 1:" not in markdown
+    assert "Importance: HIGH" in markdown
+    assert "Confidence:" in markdown
+    assert "Evidence: 1 source; Sources: Source 1" in markdown
+    assert "### Latency" in markdown
+    assert "**Why it matters:** Related finding: Latency benchmark results." in markdown
+    assert "**Related concepts:** Performance" in markdown
+    assert "### 2024" in markdown
+    assert "Compression Statistics" not in markdown
+    assert "Finding Importance" not in markdown
+    assert "### References\n\n1. Publication source [Source 1]" in markdown
+    assert str(chunk_id) not in markdown
+
+
+def test_enhanced_renderer_uses_optional_intelligence_without_scores() -> None:
+    """Markdown maps enriched details by canonical position and hides raw IDs."""
+    first_chunk_id = uuid4()
+    second_chunk_id = uuid4()
+    base_report = _report(
+        findings=(
+            Finding(
+                title="Deterministic finding",
+                description="The source records a latency improvement.",
+                supporting_chunk_ids=(first_chunk_id, second_chunk_id),
+            ),
+        ),
+        important_entities=("PaperForge",),
+        important_definitions=("Latency means response delay.",),
+        important_metrics=("30%",),
+        timeline=(
+            TimelineEvent(
+                date="2026-07-29",
+                description="A latency improvement was reported.",
+                supporting_chunk_ids=(first_chunk_id,),
+            ),
+        ),
+        references=("https://example.com/base",),
+    )
+    enhanced = EnhancedResearchReport(
+        base_report=base_report,
+        executive_summary="Refined summary.",
+        findings=base_report.findings,
+        appendix_findings=(
+            Finding(
+                title="Appendix source finding",
+                description="A supporting implementation detail.",
+                supporting_chunk_ids=(second_chunk_id,),
+            ),
+        ),
+        sections=(),
+        synthesis_metadata=SynthesisMetadata(
+            provider="groq",
+            model="test-model",
+            elapsed_ms=0.0,
+            successful=True,
+            source_evidence=(
+                SynthesisSourceEvidence(
+                    chunk_id=first_chunk_id,
+                    confidence=0.9,
+                    references=("https://example.com/first",),
+                ),
+                SynthesisSourceEvidence(
+                    chunk_id=second_chunk_id,
+                    confidence=0.8,
+                    references=("https://example.com/second",),
+                ),
+            ),
+        ),
+        report_intelligence=ReportIntelligence(
+            entity_groups=(
+                EntityGroup(
+                    category="Organizations",
+                    entities=(
+                        NormalizedEntity(
+                            name="PaperForge",
+                            aliases=("PF",),
+                            supporting_chunk_ids=(first_chunk_id,),
+                            references=("https://example.com/first",),
+                            confidence=0.9,
+                        ),
+                    ),
+                ),
+            ),
+            definitions=(
+                ConsolidatedDefinition(
+                    concept="Latency",
+                    definition="Latency is the time before a response.",
+                    related_concepts=("Performance",),
+                    supporting_chunk_ids=(first_chunk_id,),
+                    references=("https://example.com/first",),
+                    confidence=0.84,
+                ),
+            ),
+            timeline=(
+                IntelligentTimelineEvent(
+                    date="2026-07-29",
+                    description="The document reports a latency improvement.",
+                    supporting_chunk_ids=(first_chunk_id,),
+                    references=("https://example.com/first",),
+                    confidence=0.84,
+                ),
+            ),
+            findings=(
+                EnrichedFinding(
+                    source_kind="finding",
+                    source_index=0,
+                    title="Performance improvement",
+                    summary="The document reports a measured latency improvement.",
+                    supporting_chunk_ids=(first_chunk_id, second_chunk_id),
+                    references=("https://example.com/first",),
+                    confidence=0.92,
+                    importance="high",
+                ),
+                EnrichedFinding(
+                    source_kind="appendix",
+                    source_index=0,
+                    title="Implementation context",
+                    summary="The document includes a supporting implementation detail.",
+                    supporting_chunk_ids=(second_chunk_id,),
+                    references=("https://example.com/second",),
+                    confidence=0.71,
+                    importance="low",
+                ),
+            ),
+            references=(
+                ConsolidatedReference(
+                    reference="https://example.com/consolidated",
+                    supporting_chunk_ids=(first_chunk_id, second_chunk_id),
+                ),
+            ),
+        ),
+    )
+
+    markdown = MarkdownRenderer().render_enhanced(enhanced)
+
+    _assert_markdown_presentation_contract(markdown)
+    assert "Performance improvement" in markdown
+    assert "Implementation context" in markdown
+    assert "Importance: HIGH" in markdown
+    assert "Importance: LOW" in markdown
+    assert "Confidence: 100%" in markdown
+    assert "Confidence: 60%" in markdown
+    assert "Evidence: 2 sources" in markdown
+    assert "Organizations" not in markdown
+    assert "also known as: PF" not in markdown
+    assert "**Related concepts:** Performance" in markdown
+    assert "https://example.com/consolidated [Source 1, Source 2]" in markdown
+    assert "score" not in markdown.lower()
+    assert str(first_chunk_id) not in markdown
+    assert str(second_chunk_id) not in markdown
+
+
+def test_enhanced_presentation_retains_overflow_entities_as_hidden_inventory() -> None:
+    """The composer limits primary entities without rendering valid overflow."""
+    chunk_ids = tuple(uuid4() for _ in range(9))
+    entities = tuple(
+        NormalizedEntity(
+            name=f"Technology {index}",
+            aliases=(f"Tech {index}",),
+            supporting_chunk_ids=(chunk_id,),
+            references=(f"https://example.com/reference/{index}",),
+            confidence=0.8,
+        )
+        for index, chunk_id in enumerate(chunk_ids, start=1)
+    )
+    intelligence = ReportIntelligence(
+        entity_groups=(
+            EntityGroup(category="Technologies", entities=entities),
+        ),
+        references=tuple(
+            ConsolidatedReference(
+                reference=f"https://example.com/reference/{index}",
+                supporting_chunk_ids=(chunk_id,),
+            )
+            for index, chunk_id in enumerate(chunk_ids, start=1)
+        ),
+    )
+    enhanced = EnhancedResearchReport(
+        base_report=_report(),
+        executive_summary="Display context only.",
+        findings=(),
+        sections=(),
+        synthesis_metadata=SynthesisMetadata(
+            provider="groq",
+            model="test-model",
+            elapsed_ms=0.0,
+            successful=True,
+            source_evidence=tuple(
+                SynthesisSourceEvidence(
+                    chunk_id=chunk_id,
+                    confidence=0.8,
+                    references=(f"https://example.com/reference/{index}",),
+                )
+                for index, chunk_id in enumerate(chunk_ids, start=1)
+            ),
+        ),
+        report_intelligence=intelligence,
+    )
+
+    context = EnhancedReportRenderContext.from_report(enhanced)
+    presentation = ReportComposer().compose(enhanced)
+    markdown = MarkdownRenderer().render_enhanced(enhanced)
+
+    assert len(enhanced.report_intelligence.entity_groups[0].entities) == 9
+    assert len(context.entity_groups[0].entities) == 9
+    assert tuple(entity.name for entity in context.entity_groups[0].entities) == tuple(
+        f"Technology {index}" for index in range(1, 10)
+    )
+    assert tuple(reference.reference for reference in context.references) == tuple(
+        f"https://example.com/reference/{index}" for index in range(1, 10)
+    )
+    _assert_markdown_presentation_contract(markdown)
+    assert presentation.hidden_content.entity_groups[0].category == "Technologies"
+    assert tuple(
+        entity.name
+        for entity in presentation.hidden_content.entity_groups[0].entities
+    ) == tuple(f"Technology {index}" for index in range(1, 10))
+    assert "### Additional Entities" not in markdown
+    assert "Technology 9" not in markdown
+    assert "9. https://example.com/reference/9 [Source 9]" not in markdown
+    appendix = next(
+        (section for section in presentation.sections if section.anchor_id == "appendix"),
+        None,
+    )
+    assert appendix is None or all(
+        group.heading != "Additional Entities" for group in appendix.appendix_groups
+    )
+
+
+def test_enhanced_presentation_groups_findings_and_calibrates_confidence() -> None:
+    """Grouping and calibration are transient views over immutable source data."""
+    first_chunk_id = uuid4()
+    second_chunk_id = uuid4()
+    base_report = _report(
+        findings=(
+            Finding(
+                title="PDF was introduced in 1993",
+                description="PDF was introduced in 1993 for document exchange.",
+                supporting_chunk_ids=(first_chunk_id,),
+            ),
+            Finding(
+                title="ISO standard defines PDF",
+                description="The ISO standard defines interoperable PDF behavior.",
+                supporting_chunk_ids=(second_chunk_id,),
+            ),
+        )
+    )
+    enhanced = EnhancedResearchReport(
+        base_report=base_report,
+        executive_summary="History and standards are described.",
+        findings=base_report.findings,
+        sections=(),
+        synthesis_metadata=SynthesisMetadata(
+            provider="groq",
+            model="test-model",
+            elapsed_ms=0.0,
+            successful=True,
+        ),
+        report_intelligence=ReportIntelligence(
+            findings=(
+                EnrichedFinding(
+                    source_kind="finding",
+                    source_index=0,
+                    title=base_report.findings[0].title,
+                    summary=base_report.findings[0].description,
+                    supporting_chunk_ids=(first_chunk_id,),
+                    references=(),
+                    confidence=0.65,
+                    importance="medium",
+                ),
+                EnrichedFinding(
+                    source_kind="finding",
+                    source_index=1,
+                    title=base_report.findings[1].title,
+                    summary=base_report.findings[1].description,
+                    supporting_chunk_ids=(second_chunk_id,),
+                    references=("https://example.com/standard",),
+                    confidence=0.95,
+                    importance="high",
+                ),
+            ),
+        ),
+    )
+
+    context = EnhancedReportRenderContext.from_report(enhanced)
+    presentation = ReportComposer().compose(enhanced)
+    markdown = MarkdownRenderer().render_enhanced(enhanced)
+    first_label = context.findings[0].confidence_label
+    second_label = context.findings[1].confidence_label
+
+    assert tuple(group.heading for group in context.finding_groups) == (
+        "History",
+        "Standards",
+    )
+    assert tuple(finding.title for finding in context.findings) == tuple(
+        finding.title for finding in enhanced.findings
+    )
+    assert not hasattr(enhanced.report_intelligence, "finding_groups")
+    assert enhanced.report_intelligence.findings[0].confidence == 0.65
+    assert enhanced.report_intelligence.findings[1].confidence == 0.95
+    assert first_label is not None and second_label is not None
+    assert 60 <= int(first_label.removesuffix("%")) <= 100
+    assert 60 <= int(second_label.removesuffix("%")) <= 100
+    assert int(first_label.removesuffix("%")) < int(second_label.removesuffix("%"))
+    _assert_markdown_presentation_contract(markdown)
+    assert "### Principal Findings" in markdown
+    assert "PDF was introduced in 1993" in markdown
+    assert "ISO standard defines PDF" in markdown
+    key_insights = next(
+        section
+        for section in presentation.sections
+        if section.anchor_id == "key-insights"
+    )
+    assert key_insights.finding_groups[0].heading == "Principal Findings"
+
+
+def test_enhanced_presentation_uses_evidence_richness_for_equal_confidence() -> None:
+    """Equal raw confidence is deterministically distinguished by provenance."""
+    first_chunk_id = uuid4()
+    second_chunk_id = uuid4()
+    base_report = _report(
+        findings=(
+            Finding(
+                title="Feature one",
+                description="The document describes a feature.",
+                supporting_chunk_ids=(first_chunk_id,),
+            ),
+            Finding(
+                title="Feature two",
+                description="The document describes another feature.",
+                supporting_chunk_ids=(first_chunk_id, second_chunk_id),
+            ),
+        )
+    )
+    enhanced = EnhancedResearchReport(
+        base_report=base_report,
+        executive_summary="Two features are described.",
+        findings=base_report.findings,
+        sections=(),
+        synthesis_metadata=SynthesisMetadata(
+            provider="groq",
+            model="test-model",
+            elapsed_ms=0.0,
+            successful=True,
+        ),
+        report_intelligence=ReportIntelligence(
+            findings=(
+                EnrichedFinding(
+                    source_kind="finding",
+                    source_index=0,
+                    title=base_report.findings[0].title,
+                    summary=base_report.findings[0].description,
+                    supporting_chunk_ids=(first_chunk_id,),
+                    references=(),
+                    confidence=0.8,
+                    importance="low",
+                ),
+                EnrichedFinding(
+                    source_kind="finding",
+                    source_index=1,
+                    title=base_report.findings[1].title,
+                    summary=base_report.findings[1].description,
+                    supporting_chunk_ids=(first_chunk_id, second_chunk_id),
+                    references=("https://example.com/evidence",),
+                    confidence=0.8,
+                    importance="medium",
+                ),
+            ),
+        ),
+    )
+
+    context = EnhancedReportRenderContext.from_report(enhanced)
+
+    weaker = context.findings[0].confidence_label
+    richer = context.findings[1].confidence_label
+    assert weaker is not None and richer is not None
+    assert int(weaker.removesuffix("%")) < int(richer.removesuffix("%"))
+    assert enhanced.report_intelligence.findings[0].confidence == 0.8
+    assert enhanced.report_intelligence.findings[1].confidence == 0.8
+
+
+def test_markdown_omits_duplicate_insight_title_and_body_prose() -> None:
+    """A finding whose title is its complete statement is not printed twice."""
+    chunk_id = uuid4()
+    finding = Finding(
+        title="The source reports a 30% latency reduction.",
+        description="The source reports a 30% latency reduction.",
+        supporting_chunk_ids=(chunk_id,),
+    )
+    enhanced = EnhancedResearchReport(
+        base_report=_report(findings=(finding,)),
+        executive_summary="The report contains one measured result.",
+        findings=(finding,),
+        synthesis_metadata=SynthesisMetadata(
+            provider="groq",
+            model="test-model",
+            elapsed_ms=0.0,
+            successful=True,
+        ),
+    )
+
+    markdown = MarkdownRenderer().render_enhanced(enhanced)
+
+    assert (
+        "#### The source reports a 30% latency reduction.\n\n"
+        "The source reports a 30% latency reduction.\n\n*"
+    ) not in markdown
+
+
+def test_markdown_presentation_renders_visible_metrics_and_appendix_statistics_only() -> None:
+    """Markdown formats visible tables without surfacing hidden presentation data."""
+    enhanced = EnhancedResearchReport(
+        base_report=_report(),
+        executive_summary="A concise enhanced summary.",
+        synthesis_metadata=SynthesisMetadata(
+            provider="groq",
+            model="test-model",
+            elapsed_ms=0.0,
+            successful=True,
+        ),
+    )
+    presentation = ReportComposer().compose(enhanced)
+    metrics_table = EvidenceTable(
+        title="Key Metrics",
+        columns=("Metric", "Value"),
+        rows=(("Total pages", "12"), ("Latency reduction", "35%")),
+    )
+    compression_table = EvidenceTable(
+        title="Compression Statistics",
+        columns=("Category", "Extracted", "Displayed", "Appendix", "Hidden"),
+        rows=(("Findings", "20", "8", "5", "7"),),
+    )
+    supporting_statistics = EvidenceTable(
+        title="Supporting Statistics",
+        columns=("Measure", "Count"),
+        rows=(("Duplicate findings", "2"),),
+    )
+    evidence_section = next(
+        section for section in presentation.sections if section.key == "evidence-summary"
+    )
+    hidden_finding = InsightCard(
+        key="hidden-overflow-finding",
+        title="Hidden overflow finding",
+        summary="This must remain unavailable in the professional report.",
+        evidence=PresentationEvidence(),
+    )
+    updated_evidence = evidence_section.model_copy(
+        update={
+            "evidence_tables": evidence_section.evidence_tables
+            + (metrics_table, compression_table)
+        }
+    )
+    updated_presentation = presentation.model_copy(
+        update={
+            "sections": tuple(
+                updated_evidence
+                if section.key == "evidence-summary"
+                else section
+                for section in presentation.sections
+            ),
+            "hidden_content": HiddenPresentationData(
+                findings=(hidden_finding,),
+            ),
+        }
+    )
+
+    markdown = MarkdownRenderer().render_presentation(updated_presentation)
+
+    assert "### Table " in markdown and ". Key Metrics" in markdown
+    assert "| Metric | Value |" in markdown
+    assert "| Total pages | 12 |" in markdown
+    assert ". Compression Statistics" not in markdown
+    assert "| Category | Extracted | Displayed | Appendix | Hidden |" not in markdown
+    assert "### Supporting Statistics" not in markdown
+    assert "| Duplicate findings | 2 |" not in markdown
+    assert "Hidden overflow finding" not in markdown

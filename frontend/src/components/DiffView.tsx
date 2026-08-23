@@ -1,0 +1,2 @@
+import { changeWindow } from "../utils/diff";
+export function DiffView({ oldHtml, newHtml }: { oldHtml: string | null; newHtml: string | null }) { const diff = changeWindow(oldHtml, newHtml); return <div className="diff" aria-label="Proposed text change"><div><strong>Before</strong><p>{diff.before || "No prior text."}</p></div><div><strong>After</strong><p>{diff.after || "No replacement text."}</p></div>{diff.truncated && <small>Showing the changed region of this document block.</small>}</div>; }
