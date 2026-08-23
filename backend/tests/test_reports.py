@@ -88,7 +88,7 @@ def _report(
 def _assert_markdown_presentation_contract(markdown: str) -> None:
     """Assert the ordered publication hierarchy projected from actual sections."""
     assert markdown.startswith("# Research Report\n\n")
-    assert "*PaperForge Research Report - v0.10.0*" in markdown
+    assert "*PaperForge Research Report - v0.11.0*" in markdown
     assert "## Cover Page" not in markdown
     assert "Prepared from document: **Not available**" in markdown
     assert "Prepared by PaperForge" in markdown

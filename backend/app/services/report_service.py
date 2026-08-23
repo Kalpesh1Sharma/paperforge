@@ -108,6 +108,8 @@ class LocalReportStore:
             "report.md",
             "report.pdf",
             "metadata.json",
+            "review.json",
+            "reviewed_report.docx",
         }
         if artifact_name not in allowed_names:
             raise ReportStorageError("Requested report artifact is not supported.")
@@ -149,6 +151,14 @@ class LocalReportStore:
             raise ReportStorageError("Report metadata is not JSON serializable.") from exc
         destination = self.artifact_path(report_id, artifact_name)
         self._write_bytes(destination, encoded)
+        return destination
+
+    def write_bytes(self, report_id: UUID, artifact_name: str, value: bytes) -> Path:
+        """Atomically persist one approved binary review artifact."""
+        if not isinstance(value, bytes):
+            raise ReportStorageError("Binary report artifacts must be bytes.")
+        destination = self.artifact_path(report_id, artifact_name)
+        self._write_bytes(destination, value)
         return destination
 
     def read_text(self, report_id: UUID, artifact_name: str) -> str:

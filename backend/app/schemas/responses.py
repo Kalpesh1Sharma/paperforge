@@ -101,3 +101,32 @@ class ReportMetadataResponse(BaseModel):
         if (self.document is None) == (self.documents is None):
             raise ValueError("Metadata must contain exactly one source shape.")
         return self
+
+
+class ReviewChangeResponse(BaseModel):
+    """Exact before/after provider proposal displayed to a human reviewer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    change_id: str
+    operation: Literal["edit", "create", "delete"]
+    chunk_id: str | None = None
+    document_id: str | None = None
+    old_html: str | None = None
+    new_html: str | None = None
+    ai_explanation: str | None = None
+    insert_after_chunk_id: str | None = None
+    insert_before_chunk_id: str | None = None
+
+
+class ReviewStateResponse(BaseModel):
+    """Safe local state for a controlled document review."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    report_id: UUID
+    status: Literal["awaiting_approval", "processing", "completed", "failed", "cancelled", "needs_attention"]
+    pending_changes: tuple[ReviewChangeResponse, ...] = ()
+    approved_changes: tuple[ReviewChangeResponse, ...] = ()
+    rejected_changes: tuple[ReviewChangeResponse, ...] = ()
+    final_docx_available: bool

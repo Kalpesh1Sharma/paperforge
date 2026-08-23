@@ -7,7 +7,9 @@ from app.schemas.responses import (
     MultiReportCreatedResponse,
     ReportCreatedResponse,
     ReportMetadataResponse,
+    ReviewStateResponse,
 )
+from app.schemas.requests import ReviewDecisionRequest
 
 __all__ = [
     "ApiError",
@@ -16,4 +18,6 @@ __all__ = [
     "MultiReportCreatedResponse",
     "ReportCreatedResponse",
     "ReportMetadataResponse",
+    "ReviewDecisionRequest",
+    "ReviewStateResponse",
 ]

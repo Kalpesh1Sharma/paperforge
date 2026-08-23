@@ -19,6 +19,16 @@ from app.services.report_service import (
     ReportServiceError,
     ReportStorageError,
 )
+from app.integrations.superdocs import (
+    SuperDocsNotConfiguredError,
+    SuperDocsProtocolError,
+    SuperDocsUnavailableError,
+)
+from app.services.review_service import (
+    ReviewInvalidStateError,
+    ReviewNotFoundError,
+    ReviewVerificationError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +134,34 @@ async def storage_error_handler(
         _request_id(request),
         request.url.path,
     )
+
+
+async def review_not_found_handler(request: Request, exc: ReviewNotFoundError) -> JSONResponse:
+    """Return a stable absence response for local review records and DOCX files."""
+    return _error_response(request, status_code=404, code="review_not_found", message=str(exc))
+
+
+async def review_state_handler(request: Request, exc: ReviewInvalidStateError) -> JSONResponse:
+    """Require an explicit current pending change for every human decision."""
+    return _error_response(request, status_code=409, code="review_invalid_state", message=str(exc))
+
+
+async def review_unavailable_handler(
+    request: Request,
+    exc: SuperDocsNotConfiguredError | SuperDocsUnavailableError,
+) -> JSONResponse:
+    """Keep optional review configuration and provider outages safely opaque."""
+    return _error_response(request, status_code=503, code="review_unavailable", message=str(exc))
+
+
+async def review_protocol_handler(request: Request, exc: SuperDocsProtocolError) -> JSONResponse:
+    """Avoid returning provider metadata when its documented contract is invalid."""
+    return _error_response(request, status_code=503, code="review_protocol_error", message=str(exc))
+
+
+async def review_verification_handler(request: Request, exc: ReviewVerificationError) -> JSONResponse:
+    """Never claim successful completion when exported DOCX verification fails."""
+    return _error_response(request, status_code=500, code="review_verification_failed", message=str(exc))
     return _error_response(
         request,
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -172,5 +210,11 @@ def install_error_handlers(app: FastAPI) -> None:
     )
     app.add_exception_handler(ReportStorageError, storage_error_handler)
     app.add_exception_handler(ReportOutputError, storage_error_handler)
+    app.add_exception_handler(ReviewNotFoundError, review_not_found_handler)
+    app.add_exception_handler(ReviewInvalidStateError, review_state_handler)
+    app.add_exception_handler(SuperDocsNotConfiguredError, review_unavailable_handler)
+    app.add_exception_handler(SuperDocsUnavailableError, review_unavailable_handler)
+    app.add_exception_handler(SuperDocsProtocolError, review_protocol_handler)
+    app.add_exception_handler(ReviewVerificationError, review_verification_handler)
     app.add_exception_handler(RequestValidationError, request_validation_handler)
     app.add_exception_handler(Exception, unexpected_error_handler)

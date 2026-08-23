@@ -3,8 +3,10 @@
 from fastapi import Depends
 
 from app.config import Settings, settings
+from app.integrations.superdocs import SuperDocsClient
 from app.services.pipeline_service import PipelineService
 from app.services.report_service import LocalReportStore, PaperForgeService
+from app.services.review_service import ReviewService
 from app.services.upload_service import UploadService
 
 
@@ -45,4 +47,28 @@ def get_paperforge_service(
         store=store,
         pipeline_service=pipeline_service,
         upload_service=upload_service,
+    )
+
+
+def get_superdocs_client(
+    active_settings: Settings = Depends(get_settings),
+) -> SuperDocsClient:
+    """Create the optional client lazily; missing configuration remains safe."""
+    return SuperDocsClient(
+        api_key=active_settings.superdocs_api_key,
+        base_url=active_settings.superdocs_api_base_url,
+    )
+
+
+def get_review_service(
+    store: LocalReportStore = Depends(get_report_store),
+    client: SuperDocsClient = Depends(get_superdocs_client),
+    active_settings: Settings = Depends(get_settings),
+) -> ReviewService:
+    """Provide a review orchestrator without affecting report generation DI."""
+    return ReviewService(
+        store=store,
+        client=client,
+        poll_interval_seconds=active_settings.superdocs_poll_interval_seconds,
+        max_wait_seconds=active_settings.superdocs_max_wait_seconds,
     )

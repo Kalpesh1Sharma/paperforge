@@ -8,9 +8,18 @@ from app.reports.presentation_models import PresentationModel
 from fastapi import APIRouter, Depends, File, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 
-from app.api.dependencies import get_paperforge_service
-from app.schemas import ApiErrorResponse, MultiReportCreatedResponse, ReportCreatedResponse, ReportMetadataResponse
+from app.api.dependencies import get_paperforge_service, get_review_service
+from app.schemas import (
+    ApiErrorResponse,
+    MultiReportCreatedResponse,
+    ReportCreatedResponse,
+    ReportMetadataResponse,
+    ReviewDecisionRequest,
+    ReviewStateResponse,
+)
 from app.services.report_service import GeneratedMultiReport, GeneratedReport, PaperForgeService
+from app.services.review_service import ReviewService
+from starlette.concurrency import run_in_threadpool
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
 
@@ -21,6 +30,11 @@ _ERROR_RESPONSES = {
     429: {"model": ApiErrorResponse, "description": "Provider rate limit."},
     500: {"model": ApiErrorResponse, "description": "Artifact persistence failure."},
     503: {"model": ApiErrorResponse, "description": "Temporary provider failure."},
+}
+
+_REVIEW_ERROR_RESPONSES = {
+    **_ERROR_RESPONSES,
+    409: {"model": ApiErrorResponse, "description": "Review is not awaiting this decision."},
 }
 
 
@@ -57,6 +71,24 @@ def _multi_created_response(result: GeneratedMultiReport) -> MultiReportCreatedR
                 }
                 for document in result.source_documents
             ],
+        }
+    )
+
+
+def _review_response(state: object) -> ReviewStateResponse:
+    """Translate the internal immutable review record to its public contract."""
+    payload = state.model_dump()  # type: ignore[union-attr]
+    return ReviewStateResponse.model_validate(
+        {
+            key: payload[key]
+            for key in (
+                "report_id",
+                "status",
+                "pending_changes",
+                "approved_changes",
+                "rejected_changes",
+                "final_docx_available",
+            )
         }
     )
 
@@ -115,6 +147,88 @@ async def create_multi_report(
     finally:
         for file in files:
             await file.close()
+
+
+@router.post(
+    "/{report_id}/review",
+    response_model=ReviewStateResponse,
+    responses=_REVIEW_ERROR_RESPONSES,
+    summary="Start one explicit-approval Executive Summary review",
+)
+async def start_review(
+    report_id: UUID,
+    service: Annotated[ReviewService, Depends(get_review_service)],
+) -> ReviewStateResponse:
+    """Start or return an idempotent SuperDocs review from stored report HTML."""
+    return _review_response(await run_in_threadpool(service.start_review, report_id))
+
+
+@router.get(
+    "/{report_id}/review",
+    response_model=ReviewStateResponse,
+    responses=_REVIEW_ERROR_RESPONSES,
+    summary="Retrieve persisted local review state",
+)
+def get_review(
+    report_id: UUID,
+    service: Annotated[ReviewService, Depends(get_review_service)],
+) -> ReviewStateResponse:
+    """Read local review state only; this route never polls SuperDocs."""
+    return _review_response(service.get_review(report_id))
+
+
+@router.post(
+    "/{report_id}/review/approve",
+    response_model=ReviewStateResponse,
+    responses=_REVIEW_ERROR_RESPONSES,
+    summary="Approve one proposed document change",
+)
+async def approve_review_change(
+    report_id: UUID,
+    request: ReviewDecisionRequest,
+    service: Annotated[ReviewService, Depends(get_review_service)],
+) -> ReviewStateResponse:
+    """Never approve another change implicitly or infer approval from state."""
+    return _review_response(
+        await run_in_threadpool(service.approve, report_id, request.change_id)
+    )
+
+
+@router.post(
+    "/{report_id}/review/reject",
+    response_model=ReviewStateResponse,
+    responses=_REVIEW_ERROR_RESPONSES,
+    summary="Reject one proposed document change",
+)
+async def reject_review_change(
+    report_id: UUID,
+    request: ReviewDecisionRequest,
+    service: Annotated[ReviewService, Depends(get_review_service)],
+) -> ReviewStateResponse:
+    """Reject exactly one pending proposal, optionally with human feedback."""
+    return _review_response(
+        await run_in_threadpool(
+            service.reject, report_id, request.change_id, request.feedback
+        )
+    )
+
+
+@router.get(
+    "/{report_id}/docx",
+    response_class=FileResponse,
+    responses=_REVIEW_ERROR_RESPONSES,
+    summary="Retrieve the verified human-reviewed DOCX",
+)
+def get_reviewed_docx(
+    report_id: UUID,
+    service: Annotated[ReviewService, Depends(get_review_service)],
+) -> FileResponse:
+    """Stream only a prior verified export; GET never generates a document."""
+    return FileResponse(
+        path=service.docx_path(report_id),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=f"paperforge-{report_id}-reviewed.docx",
+    )
 
 
 @router.get(
