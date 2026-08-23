@@ -86,9 +86,9 @@ def _report(
 
 
 def _assert_markdown_presentation_contract(markdown: str) -> None:
-    """Assert the fixed publication hierarchy projected from the composer."""
+    """Assert the ordered publication hierarchy projected from actual sections."""
     assert markdown.startswith("# Research Report\n\n")
-    assert "*PaperForge Research Report - v0.9.0*" in markdown
+    assert "*PaperForge Research Report - v0.9.1*" in markdown
     assert "## Cover Page" not in markdown
     assert "Prepared from document: **Not available**" in markdown
     assert "Prepared by PaperForge" in markdown
@@ -97,12 +97,17 @@ def _assert_markdown_presentation_contract(markdown: str) -> None:
 
     section_markers = tuple(
         f"## {heading}" for _, heading, _ in PRESENTATION_SECTION_SPECS
+        if f"## {heading}" in markdown
     )
     positions = tuple(markdown.index(marker) for marker in section_markers)
 
     assert positions == tuple(sorted(positions))
     for index, (_, heading, anchor_id) in enumerate(
-        PRESENTATION_SECTION_SPECS,
+        tuple(
+            spec
+            for spec in PRESENTATION_SECTION_SPECS
+            if f"## {spec[1]}" in markdown
+        ),
         start=1,
     ):
         assert f"{index}. [{heading}](#{anchor_id})" in markdown
@@ -437,12 +442,12 @@ def test_renderer_renders_enhanced_overlay_without_changing_base_rendering() -> 
     assert "https://example.com" in enhanced_markdown
     assert "[Source 1]" in enhanced_markdown
     assert str(chunk_id) not in enhanced_markdown
-    assert "### General" in enhanced_markdown
+    assert "### General" not in enhanced_markdown
     assert "Professional Experience" in enhanced_markdown
     assert "Enhanced grounded section." in enhanced_markdown
     assert "## Appendix" in enhanced_markdown
-    assert "### Supporting Statistics" in enhanced_markdown
-    assert "Composition Details" in enhanced_markdown
+    assert "### Supporting Statistics" not in enhanced_markdown
+    assert "Composition Details" not in enhanced_markdown
 
 
 def test_enhanced_renderer_accepts_a_nonblank_fallback_summary() -> None:
@@ -485,8 +490,8 @@ def test_enhanced_renderer_accepts_a_nonblank_fallback_summary() -> None:
     _assert_markdown_presentation_contract(markdown)
     assert "Deterministic fallback summary." in markdown
     assert "Deterministic source fact." in markdown
-    assert "| Provider | fallback |" in markdown
-    assert "| Model | Not applicable |" in markdown
+    assert "| Provider | fallback |" not in markdown
+    assert "| Model | Not applicable |" not in markdown
     assert "Sources: Source 1" in markdown
     assert str(chunk_id) not in markdown
 
@@ -597,8 +602,8 @@ def test_enhanced_renderer_uses_publication_hierarchy_for_shared_presentation() 
     assert "**Why it matters:** Related finding: Latency benchmark results." in markdown
     assert "**Related concepts:** Performance" in markdown
     assert "### 2024" in markdown
-    assert "### Table 1. Compression Statistics" in markdown
-    assert "### Table 2. Finding Importance" in markdown
+    assert "Compression Statistics" not in markdown
+    assert "Finding Importance" not in markdown
     assert "### References\n\n1. Publication source [Source 1]" in markdown
     assert str(chunk_id) not in markdown
 
@@ -732,8 +737,8 @@ def test_enhanced_renderer_uses_optional_intelligence_without_scores() -> None:
     assert "Confidence: 100%" in markdown
     assert "Confidence: 60%" in markdown
     assert "Evidence: 2 sources" in markdown
-    assert "Organizations" in markdown
-    assert "also known as: PF" in markdown
+    assert "Organizations" not in markdown
+    assert "also known as: PF" not in markdown
     assert "**Related concepts:** Performance" in markdown
     assert "https://example.com/consolidated [Source 1, Source 2]" in markdown
     assert "score" not in markdown.lower()
@@ -805,17 +810,16 @@ def test_enhanced_presentation_retains_overflow_entities_as_hidden_inventory() -
     assert tuple(
         entity.name
         for entity in presentation.hidden_content.entity_groups[0].entities
-    ) == ("Technology 9",)
+    ) == tuple(f"Technology {index}" for index in range(1, 10))
     assert "### Additional Entities" not in markdown
     assert "Technology 9" not in markdown
     assert "9. https://example.com/reference/9 [Source 9]" not in markdown
-    assert all(
-        group.heading != "Additional Entities"
-        for group in next(
-            section
-            for section in presentation.sections
-            if section.anchor_id == "appendix"
-        ).appendix_groups
+    appendix = next(
+        (section for section in presentation.sections if section.anchor_id == "appendix"),
+        None,
+    )
+    assert appendix is None or all(
+        group.heading != "Additional Entities" for group in appendix.appendix_groups
     )
 
 
@@ -971,6 +975,34 @@ def test_enhanced_presentation_uses_evidence_richness_for_equal_confidence() -> 
     assert enhanced.report_intelligence.findings[1].confidence == 0.8
 
 
+def test_markdown_omits_duplicate_insight_title_and_body_prose() -> None:
+    """A finding whose title is its complete statement is not printed twice."""
+    chunk_id = uuid4()
+    finding = Finding(
+        title="The source reports a 30% latency reduction.",
+        description="The source reports a 30% latency reduction.",
+        supporting_chunk_ids=(chunk_id,),
+    )
+    enhanced = EnhancedResearchReport(
+        base_report=_report(findings=(finding,)),
+        executive_summary="The report contains one measured result.",
+        findings=(finding,),
+        synthesis_metadata=SynthesisMetadata(
+            provider="groq",
+            model="test-model",
+            elapsed_ms=0.0,
+            successful=True,
+        ),
+    )
+
+    markdown = MarkdownRenderer().render_enhanced(enhanced)
+
+    assert (
+        "#### The source reports a 30% latency reduction.\n\n"
+        "The source reports a 30% latency reduction.\n\n*"
+    ) not in markdown
+
+
 def test_markdown_presentation_renders_visible_metrics_and_appendix_statistics_only() -> None:
     """Markdown formats visible tables without surfacing hidden presentation data."""
     enhanced = EnhancedResearchReport(
@@ -1002,9 +1034,6 @@ def test_markdown_presentation_renders_visible_metrics_and_appendix_statistics_o
     evidence_section = next(
         section for section in presentation.sections if section.key == "evidence-summary"
     )
-    appendix_section = next(
-        section for section in presentation.sections if section.key == "appendix"
-    )
     hidden_finding = InsightCard(
         key="hidden-overflow-finding",
         title="Hidden overflow finding",
@@ -1017,24 +1046,11 @@ def test_markdown_presentation_renders_visible_metrics_and_appendix_statistics_o
             + (metrics_table, compression_table)
         }
     )
-    updated_appendix = appendix_section.model_copy(
-        update={
-            "appendix_groups": appendix_section.appendix_groups
-            + (
-                AppendixGroup(
-                    heading="Supporting Statistics",
-                    evidence_tables=(supporting_statistics,),
-                ),
-            )
-        }
-    )
     updated_presentation = presentation.model_copy(
         update={
             "sections": tuple(
                 updated_evidence
                 if section.key == "evidence-summary"
-                else updated_appendix
-                if section.key == "appendix"
                 else section
                 for section in presentation.sections
             ),
@@ -1049,9 +1065,8 @@ def test_markdown_presentation_renders_visible_metrics_and_appendix_statistics_o
     assert "### Table " in markdown and ". Key Metrics" in markdown
     assert "| Metric | Value |" in markdown
     assert "| Total pages | 12 |" in markdown
-    assert ". Compression Statistics" in markdown
-    assert "| Category | Extracted | Displayed | Appendix | Hidden |" in markdown
-    assert "### Supporting Statistics" in markdown
-    assert "#### Table 1. Supporting Statistics" in markdown
-    assert "| Duplicate findings | 2 |" in markdown
+    assert ". Compression Statistics" not in markdown
+    assert "| Category | Extracted | Displayed | Appendix | Hidden |" not in markdown
+    assert "### Supporting Statistics" not in markdown
+    assert "| Duplicate findings | 2 |" not in markdown
     assert "Hidden overflow finding" not in markdown

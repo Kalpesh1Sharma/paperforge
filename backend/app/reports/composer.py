@@ -70,6 +70,62 @@ _PAGE_COUNT_STATEMENT_PATTERN = re.compile(
     r"|\b(?:document|report|file)\s+(?:contains|contain|has|have)\s+\d+\s+pages?\b",
     flags=re.IGNORECASE,
 )
+_EMAIL_PATTERN = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b")
+_PHONE_PATTERN = re.compile(r"\+?\d[\d\s().-]{6,}\d")
+_CONTACT_LABEL_PATTERN = re.compile(
+    r"\b(?:contact|email|mail|phone|telephone|location|address|portfolio|linkedin|github)\b",
+    flags=re.IGNORECASE,
+)
+_STRUCTURAL_SECTION_LABELS = (
+    "certifications",
+    "education",
+    "experience",
+    "github",
+    "linkedin",
+    "portfolio",
+    "professional summary",
+    "projects",
+    "references",
+    "skills technologies",
+    "skills and technologies",
+    "summary",
+)
+_NAVIGATION_LABELS = frozenset(
+    {
+        "home",
+        "search",
+        "categories",
+        "archive",
+        "tags",
+        "products",
+        "support",
+        "websites",
+        "about",
+    }
+)
+_BREADCRUMB_PATTERN = re.compile(r"^\s*home\s*(?:»|>)", flags=re.IGNORECASE)
+_BREADCRUMB_SEPARATOR_PATTERN = re.compile(r"(?:»|>)\s*")
+_SITE_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*\.[A-Za-z]{2,}\s+")
+_HEADING_METADATA_PATTERN = re.compile(
+    r"\b(?:by|written\s+by|author)\s+[A-Z]"
+    r"|\b(?:published|updated|share)\b"
+    r"|\b\d+\s*(?:min(?:ute)?s?|hours?)\s+(?:read|reading)\b"
+    r"|\b\d{4}(?:[-/]\d{1,2}(?:[-/]\d{1,2})?)?\b"
+    r"|\b(?:january|february|march|april|may|june|july|august|september|"
+    r"october|november|december)\s+\d{1,2}(?:,\s*\d{4})?\b",
+    flags=re.IGNORECASE,
+)
+_GENERIC_PUBLICATION_TITLES = frozenset(
+    {
+        "document",
+        "home",
+        "introduction",
+        "input",
+        "report",
+        "research report",
+        "upload",
+    }
+)
 _LABELED_METRIC_PATTERN = re.compile(
     r"^\s*([A-Za-z][A-Za-z0-9 /()#._-]{1,80}?)\s*(?::|=|[-—])\s*(\S(?:.*\S)?)\s*$"
 )
@@ -384,7 +440,10 @@ class ReportComposer:
         self._validate_generated_on(generated_on)
 
         try:
-            context = EnhancedReportRenderContext.from_report(report)
+            context = EnhancedReportRenderContext.from_report(
+                report,
+                source_document.filename if source_document is not None else None,
+            )
             confidence_by_source = self._confidence_by_source(report)
             primary_candidates = self._primary_finding_candidates(
                 report,
@@ -407,6 +466,14 @@ class ReportComposer:
                 primary_candidates
                 + appendix_candidates
                 + supported_section_candidates
+            )
+            suppressed_finding_candidates, visible_curated_findings = (
+                self._editorially_suppress_findings(curated_findings.cards)
+            )
+            curated_findings = _CurationResult(
+                cards=visible_curated_findings,
+                deduplicated=curated_findings.deduplicated,
+                artifact_rejected=curated_findings.artifact_rejected,
             )
             executive_summary = self._executive_summary_paragraphs(
                 report.executive_summary,
@@ -471,7 +538,8 @@ class ReportComposer:
             hidden_finding_cards = tuple(
                 candidate.card
                 for candidate in (
-                    hidden_canonical_candidates
+                    suppressed_finding_candidates
+                    + hidden_canonical_candidates
                     + hidden_section_candidates
                 )
             )
@@ -520,6 +588,11 @@ class ReportComposer:
             )
             entity_groups = entity_result.visible_groups
             hidden_entity_groups = entity_result.hidden_groups
+            if self._mode in {ReportMode.PROFESSIONAL, ReportMode.EXECUTIVE}:
+                hidden_entity_groups = self._merge_entity_presentation_groups(
+                    entity_groups + hidden_entity_groups
+                )
+                entity_groups = ()
             timeline_candidates = self._timeline_cards(
                 report,
                 context,
@@ -532,10 +605,28 @@ class ReportComposer:
             )
 
             metric_result = self._metric_cards(report, source_document)
+            publication_mode = self._mode in {
+                ReportMode.PROFESSIONAL,
+                ReportMode.EXECUTIVE,
+            }
+            metric_candidates = metric_result.cards
+            document_metadata_metrics: tuple[MetricCard, ...] = ()
+            if publication_mode:
+                document_metadata_metrics = tuple(
+                    card
+                    for card in metric_candidates
+                    if self._is_document_metadata_metric(card)
+                )
+                metric_candidates = tuple(
+                    card
+                    for card in metric_candidates
+                    if not self._is_document_metadata_metric(card)
+                )
             visible_metrics, hidden_metrics = self._take(
-                metric_result.cards,
+                metric_candidates,
                 self._budget.metrics_limit,
             )
+            hidden_metrics = document_metadata_metrics + hidden_metrics
 
             all_visible_cards = (
                 tuple(candidate.card for candidate in summary_covered)
@@ -584,7 +675,8 @@ class ReportComposer:
                     + len(technical_candidates)
                 ),
                 appendix_findings=len(appendix_candidates_visible),
-                hidden_findings=len(hidden_canonical_candidates)
+                hidden_findings=len(suppressed_finding_candidates)
+                + len(hidden_canonical_candidates)
                 + len(hidden_section_candidates),
                 deduplicated_findings=curated_findings.deduplicated,
                 artifact_findings=curated_findings.artifact_rejected,
@@ -881,6 +973,79 @@ class ReportComposer:
             return values, ()
         return values[:limit], values[limit:]
 
+    def _editorially_suppress_findings(
+        self,
+        candidates: tuple[_FindingCandidate, ...],
+    ) -> tuple[tuple[_FindingCandidate, ...], tuple[_FindingCandidate, ...]]:
+        """Keep low-value contact claims off publication pages without deleting them."""
+        if self._mode not in {ReportMode.PROFESSIONAL, ReportMode.EXECUTIVE}:
+            return (), candidates
+
+        suppressed: list[_FindingCandidate] = []
+        visible: list[_FindingCandidate] = []
+        for candidate in candidates:
+            if self._is_low_value_publication_finding(candidate.card):
+                suppressed.append(candidate)
+            else:
+                visible.append(candidate)
+        return tuple(suppressed), tuple(visible)
+
+    @classmethod
+    def _is_contact_detail_only(cls, card: InsightCard) -> bool:
+        """Identify terse contact claims without broadly redacting report evidence."""
+        combined = f"{card.title} {card.summary}".strip()
+        return cls._is_contact_detail_text(combined)
+
+    @classmethod
+    def _is_low_value_publication_finding(cls, card: InsightCard) -> bool:
+        """Suppress structural extraction residue while retaining it as hidden data."""
+        combined = f"{card.title} {card.summary}".strip()
+        return (
+            cls._is_contact_detail_only(card)
+            or cls._is_header_contact_blob(combined)
+            or cls._is_multi_section_blob(combined)
+            or cls._has_leading_navigation_chrome(card.title)
+            or cls._has_leading_navigation_chrome(card.summary)
+        )
+
+    @classmethod
+    def _has_leading_navigation_chrome(cls, value: str) -> bool:
+        """Recognize a navigation cluster at the start of extracted web text."""
+        if _BREADCRUMB_PATTERN.match(value):
+            return True
+        leading_tokens = tuple(cls._content_tokens(value))[:10]
+        navigation_labels = {
+            token for token in leading_tokens if token in _NAVIGATION_LABELS
+        }
+        return len(navigation_labels) >= 3
+
+    @classmethod
+    def _is_header_contact_blob(cls, value: str) -> bool:
+        """Recognize combined identity, profile, and navigation header fragments."""
+        label_count = cls._structural_section_label_count(value)
+        has_direct_contact = bool(
+            _EMAIL_PATTERN.search(value) or _PHONE_PATTERN.search(value)
+        )
+        return (has_direct_contact and label_count >= 2) or label_count >= 4
+
+    @classmethod
+    def _is_multi_section_blob(cls, value: str) -> bool:
+        """Recognize concatenated extraction chunks without penalizing long prose."""
+        return (
+            len(value.split()) >= 18
+            and cls._structural_section_label_count(value) >= 3
+        )
+
+    @staticmethod
+    def _structural_section_label_count(value: str) -> int:
+        """Count distinct generic document-navigation labels in normalized text."""
+        normalized = ReportComposer._normalized_text(value)
+        return sum(
+            1
+            for label in _STRUCTURAL_SECTION_LABELS
+            if re.search(rf"\b{re.escape(label)}\b", normalized)
+        )
+
     @classmethod
     def _curate_finding_candidates(
         cls,
@@ -1094,6 +1259,10 @@ class ReportComposer:
                 key=best.card.key,
                 title=best.card.title,
                 summary=best.card.summary,
+                summary_includes_title=cls._summary_includes_title(
+                    best.card.title,
+                    best.card.summary,
+                ),
                 importance=importance,
                 evidence=evidence,
             ),
@@ -1178,6 +1347,20 @@ class ReportComposer:
         shared = len(left_tokens.intersection(right_tokens))
         union = len(left_tokens.union(right_tokens))
         return shared >= 3 and union > 0 and shared / union >= 0.85
+
+    @classmethod
+    def _summary_includes_title(cls, title: str, summary: str) -> bool:
+        """Identify a title repeated as the leading fragment of its body."""
+        normalized_title = cls._normalized_text(title)
+        normalized_summary = cls._normalized_text(summary)
+        if not normalized_title or not normalized_summary:
+            return False
+        if normalized_title == normalized_summary:
+            return True
+        return (
+            len(cls._content_tokens(title)) >= 4
+            and normalized_summary.startswith(normalized_title)
+        )
 
     @classmethod
     def _supported_section_candidates(
@@ -1402,18 +1585,18 @@ class ReportComposer:
 
     @classmethod
     def _is_meaningful_timeline(cls, card: TimelineCard) -> bool:
-        """Reject parser residue while retaining structured source timeline events.
-
-        A ``TimelineEvent`` is already canonical report data.  The composer
-        therefore removes only unmistakable page/list residue instead of
-        discarding a cited date merely because the extraction layer
-        used neutral wording such as ``Document records the date 2026``.
-        """
+        """Require a source-backed event, rather than merely an extracted date."""
         description = cls._strip_terminal_punctuation(card.description)
+        normalized = cls._normalized_text(description)
         if (
             _RAW_ENUMERATION_PATTERN.fullmatch(description)
             or _PAGE_ARTIFACT_PATTERN.fullmatch(description)
             or cls._is_layout_observation(description)
+            or normalized == cls._normalized_text(card.date)
+            or normalized == cls._normalized_text(f"Extracted date: {card.date}")
+            or normalized == cls._normalized_text(
+                f"Document records the date {card.date}"
+            )
         ):
             return False
         return len(cls._content_tokens(description)) >= 2
@@ -1505,6 +1688,15 @@ class ReportComposer:
             deduplicated=deduplicated,
             artifact_rejected=artifact_rejected,
         )
+
+    @classmethod
+    def _is_document_metadata_metric(cls, card: MetricCard) -> bool:
+        """Keep document page metadata on the cover, not as publication evidence."""
+        return cls._normalized_text(card.label) in {
+            "page count",
+            "pages",
+            "total pages",
+        }
 
     @staticmethod
     def _visible_source_ids(
@@ -1813,6 +2005,23 @@ class ReportComposer:
             artifact_rejected=artifact_rejected,
         )
 
+    @staticmethod
+    def _merge_entity_presentation_groups(
+        groups: tuple[EntityPresentationGroup, ...],
+    ) -> tuple[EntityPresentationGroup, ...]:
+        """Merge same-category hidden groups while preserving source ordering."""
+        merged: dict[str, list[EntityCard]] = {}
+        order: list[str] = []
+        for group in groups:
+            if group.category not in merged:
+                merged[group.category] = []
+                order.append(group.category)
+            merged[group.category].extend(group.entities)
+        return tuple(
+            EntityPresentationGroup(category=category, entities=tuple(merged[category]))
+            for category in order
+        )
+
     @classmethod
     def _entity_card(
         cls,
@@ -1949,15 +2158,10 @@ class ReportComposer:
             context.timeline,
             strict=True,
         ):
-            description = rendered.description
-            if cls._normalized_text(description) == cls._normalized_text(
-                f"Extracted date: {rendered.date}."
-            ):
-                description = f"Document records the date {rendered.date}."
             cards.append(
                 TimelineCard(
                     date=rendered.date,
-                    description=description,
+                    description=rendered.description,
                     evidence=cls._evidence(
                         event.supporting_chunk_ids,
                         cls._labels_for(context, event.supporting_chunk_ids),
@@ -2101,23 +2305,25 @@ class ReportComposer:
         metrics: tuple[MetricCard, ...],
         compression_statistics: tuple[CompressionStatistic, ...],
     ) -> tuple[PresentationSection, ...]:
-        """Create the complete fixed report body and its typed payloads."""
+        """Create an ordered subset containing only reader-facing material."""
         selected_cards = tuple(candidate.card for candidate in selected_candidates)
         technical_cards = tuple(candidate.card for candidate in technical_candidates)
         all_finding_cards = selected_cards + technical_cards + appendix_cards
         abstract = self._abstract(
-            executive_summary,
             selected_cards + technical_cards,
             self._budget.abstract_word_limit,
         )
-        report_guide = self._report_guide_intro()
+        publication_mode = self._mode in {ReportMode.PROFESSIONAL, ReportMode.EXECUTIVE}
+        report_guide = () if publication_mode else self._report_guide_intro()
         overview = self._overview_intro(cover)
         technical_groups = self._technical_groups(technical_cards)
         appendix_groups = self._appendix_groups(
             appendix_cards,
             appendix_concepts,
             appendix_references,
-            self._appendix_statistics_tables(
+            ()
+            if publication_mode
+            else self._appendix_statistics_tables(
                 compression_statistics,
                 self._budget.evidence_table_row_limit,
             ),
@@ -2129,21 +2335,13 @@ class ReportComposer:
             metrics,
             compression_statistics,
             self._budget.evidence_table_row_limit,
-        )
-        executive_intro = (
-            self._executive_summary_intro()
-            if self._budget.executive_summary_paragraph_limit != 0
-            else ()
+            include_diagnostics=not publication_mode,
         )
         major_findings_intro = self._major_findings_intro(selected_cards)
         technical_intro = self._technical_analysis_intro(technical_cards)
         timeline_intro = self._historical_evolution_intro(timeline)
         concepts_intro = self._key_concepts_intro(selected_concepts)
-        evidence_intro = (
-            self._evidence_summary_intro()
-            if self._budget.evidence_table_row_limit != 0
-            else ()
-        )
+        evidence_intro = self._evidence_summary_intro() if evidence_tables else ()
 
         payloads: dict[str, dict[str, object]] = {
             "abstract": {"intro": abstract},
@@ -2152,7 +2350,7 @@ class ReportComposer:
                 "entity_groups": entity_groups,
             },
             "research-methodology": {"intro": report_guide},
-            "executive-summary": {"intro": executive_intro + executive_summary},
+            "executive-summary": {"intro": executive_summary},
             "key-insights": {
                 "intro": major_findings_intro,
                 "finding_groups": (
@@ -2193,6 +2391,7 @@ class ReportComposer:
                 **payloads[key],
             )
             for key, heading, anchor_id in PRESENTATION_SECTION_SPECS
+            if any(payloads[key].values())
         )
 
     @classmethod
@@ -2223,7 +2422,11 @@ class ReportComposer:
             source_ids = cited_source_ids
         mean_confidence = cls._mean_confidence(source_ids, confidence_by_source)
         return DocumentMetadata(
-            title=source_title or filename or report.base_report.title,
+            title=cls._publication_title(
+                source_title,
+                report.base_report.title,
+                cls._extracted_document_heading(source_document),
+            ),
             filename=filename,
             file_type=file_type,
             page_count=page_count,
@@ -2236,6 +2439,104 @@ class ReportComposer:
             provider=report.synthesis_metadata.provider,
             model=report.synthesis_metadata.model,
         )
+
+    @classmethod
+    def _publication_title(
+        cls,
+        source_title: str | None,
+        report_title: str,
+        extracted_heading: str | None = None,
+    ) -> str:
+        """Choose a conservative publication title without promoting filenames."""
+        for candidate in (source_title, report_title, extracted_heading):
+            if cls._is_meaningful_publication_title(candidate):
+                return candidate.strip()
+        return "Research Report"
+
+    @classmethod
+    def _extracted_document_heading(
+        cls,
+        source_document: ParsedDocument | None,
+    ) -> str | None:
+        """Return a concise leading heading only when adjacent prose supports it."""
+        if source_document is None:
+            return None
+        lines = tuple(
+            _SPACE_PATTERN.sub(" ", line).strip()
+            for line in source_document.extracted_text.splitlines()
+            if line.strip()
+        )
+        for index, raw_candidate in enumerate(lines[:8]):
+            candidate = cls._leading_heading_span(raw_candidate)
+            if candidate is None:
+                continue
+            if not cls._is_trustworthy_extracted_heading(candidate):
+                continue
+            continuation = next(
+                (line for line in lines[index + 1 : index + 4] if line),
+                None,
+            )
+            if continuation is not None and len(cls._content_tokens(continuation)) >= 5:
+                return candidate
+        return None
+
+    @classmethod
+    def _leading_heading_span(cls, value: str) -> str | None:
+        """Isolate a safe short heading after a separable web breadcrumb."""
+        candidate = value.strip()
+        if cls._has_leading_navigation_chrome(candidate):
+            separators = tuple(_BREADCRUMB_SEPARATOR_PATTERN.finditer(candidate))
+            if not separators:
+                return None
+            candidate = candidate[separators[-1].end() :].strip()
+            site_label = _SITE_LABEL_PATTERN.match(candidate)
+            if site_label is not None:
+                candidate = candidate[site_label.end() :].strip()
+        metadata = _HEADING_METADATA_PATTERN.search(candidate)
+        if metadata is not None:
+            candidate = candidate[: metadata.start()].rstrip(" -—|:")
+        words = candidate.split()
+        for end in range(2, min(len(words) - 1, 12) + 1):
+            heading = " ".join(words[:end])
+            subject = cls._heading_subject(heading)
+            if subject and cls._normalized_token(words[end]) == subject:
+                candidate = heading
+                break
+        return candidate or None
+
+    @classmethod
+    def _heading_subject(cls, value: str) -> str | None:
+        """Return the final content word used to detect a heading/body repeat."""
+        tokens = tuple(
+            cls._normalized_token(token)
+            for token in _TOKEN_PATTERN.findall(value)
+        )
+        return tokens[-1] if tokens else None
+
+    @classmethod
+    def _is_trustworthy_extracted_heading(cls, value: str) -> bool:
+        """Reject navigation, generic labels, filenames, and prose-sized headings."""
+        return (
+            cls._is_meaningful_publication_title(value)
+            and not cls._has_leading_navigation_chrome(value)
+            and not _EMAIL_PATTERN.search(value)
+            and not _PHONE_PATTERN.search(value)
+            and not _HEADING_METADATA_PATTERN.search(value)
+            and 2 <= len(cls._content_tokens(value)) <= 12
+            and len(value) <= 100
+            and not value.rstrip().endswith((".", "?", "!"))
+        )
+
+    @staticmethod
+    def _is_meaningful_publication_title(value: str | None) -> bool:
+        """Reject generic labels and filename-shaped values as publication titles."""
+        if not isinstance(value, str) or not value.strip():
+            return False
+        stripped = value.strip()
+        normalized = ReportComposer._normalized_text(stripped)
+        if normalized in _GENERIC_PUBLICATION_TITLES:
+            return False
+        return not bool(re.fullmatch(r"[^\\/]+\.[A-Za-z0-9]{1,8}", stripped))
 
     @staticmethod
     def _status(report: EnhancedResearchReport) -> str:
@@ -2272,32 +2573,28 @@ class ReportComposer:
     @classmethod
     def _abstract(
         cls,
-        executive_summary: tuple[str, ...],
         selected_cards: tuple[InsightCard, ...],
         word_limit: int | None,
     ) -> tuple[str, ...]:
         """Build a narrative extractive abstract within the active budget."""
-        source_text = list(executive_summary) + [card.summary for card in selected_cards]
+        source_text = [card.summary for card in selected_cards]
         sentences: list[str] = []
-        seen: set[str] = set()
         words_used = 0
         for text in source_text:
             for sentence in cls._sentences(text):
-                if cls._looks_like_metric_or_list_fragment(sentence):
+                if not cls._is_editorially_useful_sentence(sentence):
                     continue
                 normalized = cls._normalized_text(sentence)
-                if not normalized or normalized in seen:
+                if not normalized or any(
+                    cls._similar_text(sentence, existing) for existing in sentences
+                ):
                     continue
                 sentence_words = sentence.split()
                 if word_limit is not None:
                     remaining = word_limit - words_used
-                    if remaining <= 0:
+                    if remaining <= 0 or len(sentence_words) > remaining:
                         break
-                    if len(sentence_words) > remaining:
-                        sentence = " ".join(sentence_words[:remaining])
-                        sentence_words = sentence.split()
                 sentences.append(sentence)
-                seen.add(normalized)
                 words_used += len(sentence_words)
                 if word_limit is not None and words_used >= word_limit:
                     break
@@ -2312,7 +2609,7 @@ class ReportComposer:
         finding_cards: tuple[InsightCard, ...],
         paragraph_limit: int | None,
     ) -> tuple[str, ...]:
-        """Retain non-duplicate source paragraphs without repeating a finding verbatim."""
+        """Retain concise source paragraphs without contact or duplicate residue."""
         if paragraph_limit == 0:
             return ()
         finding_text = {
@@ -2321,7 +2618,12 @@ class ReportComposer:
         paragraphs: list[str] = []
         seen: set[str] = set()
         for raw_paragraph in _PARAGRAPH_SPLIT_PATTERN.split(executive_summary):
-            paragraph = _SPACE_PATTERN.sub(" ", raw_paragraph).strip()
+            sentences = tuple(
+                sentence
+                for sentence in cls._sentences(raw_paragraph)
+                if cls._is_editorially_useful_sentence(sentence)
+            )
+            paragraph = _SPACE_PATTERN.sub(" ", " ".join(sentences)).strip()
             normalized = cls._normalized_text(paragraph)
             if (
                 not normalized
@@ -2334,6 +2636,46 @@ class ReportComposer:
             if paragraph_limit is not None and len(paragraphs) == paragraph_limit:
                 break
         return tuple(paragraphs)
+
+    @classmethod
+    def _is_editorially_useful_sentence(cls, value: str) -> bool:
+        """Keep publication summaries grounded in substantive, non-contact prose."""
+        stripped = value.strip()
+        if not stripped or cls._looks_like_metric_or_list_fragment(stripped):
+            return False
+        if cls._is_contact_detail_text(stripped):
+            return False
+        if cls._is_header_contact_blob(stripped):
+            return False
+        if cls._has_leading_navigation_chrome(stripped):
+            return False
+        normalized = cls._normalized_text(stripped)
+        return not (
+            normalized.startswith("document records the date")
+            or normalized.startswith("extracted date")
+            or normalized.startswith("the extracted chronology includes")
+            or normalized.startswith("the document focuses on")
+            or _PAGE_COUNT_STATEMENT_PATTERN.search(stripped)
+        )
+
+    @classmethod
+    def _is_contact_detail_text(cls, value: str) -> bool:
+        """Recognize low-value contact-detail sentences without global redaction."""
+        if not (
+            _EMAIL_PATTERN.search(value)
+            or _PHONE_PATTERN.search(value)
+            or _CONTACT_LABEL_PATTERN.search(value)
+        ):
+            return False
+        remaining = _EMAIL_PATTERN.sub(" ", value)
+        remaining = _PHONE_PATTERN.sub(" ", remaining)
+        remaining = _CONTACT_LABEL_PATTERN.sub(" ", remaining)
+        tokens = {
+            token
+            for token in cls._content_tokens(remaining)
+            if token not in {"details", "information"}
+        }
+        return len(tokens) <= 5
 
     @staticmethod
     def _content_summary_limit(limit: int | None) -> int | None:
@@ -2642,8 +2984,10 @@ class ReportComposer:
         metrics: tuple[MetricCard, ...],
         compression_statistics: tuple[CompressionStatistic, ...],
         row_limit: int | None,
+        *,
+        include_diagnostics: bool,
     ) -> tuple[EvidenceTable, ...]:
-        """Build budgeted report-level evidence and metric summaries."""
+        """Build budgeted evidence tables, retaining diagnostics by mode only."""
         if row_limit == 0:
             return (
                 EvidenceTable(
@@ -2735,21 +3079,24 @@ class ReportComposer:
         )
         tables: list[EvidenceTable] = [
             EvidenceTable(
-                title="Compression Statistics",
-                columns=("Category", "Extracted", "Displayed", "Appendix", "Hidden"),
-                rows=compression_rows,
-            ),
-            EvidenceTable(
-                title="Finding Importance",
-                columns=("Importance", "Findings"),
-                rows=importance_rows,
-            ),
-            EvidenceTable(
                 title="Evidence Quality",
                 columns=("Measure", "Value"),
                 rows=quality_rows,
             ),
         ]
+        if include_diagnostics:
+            tables[:0] = [
+                EvidenceTable(
+                    title="Compression Statistics",
+                    columns=("Category", "Extracted", "Displayed", "Appendix", "Hidden"),
+                    rows=compression_rows,
+                ),
+                EvidenceTable(
+                    title="Finding Importance",
+                    columns=("Importance", "Findings"),
+                    rows=importance_rows,
+                ),
+            ]
         if metrics:
             tables.append(
                 EvidenceTable(

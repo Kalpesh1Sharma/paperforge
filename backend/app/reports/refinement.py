@@ -19,6 +19,12 @@ _MAX_CANDIDATES_PER_FINDING = 128
 _TOKEN_PATTERN = re.compile(r"[\w]+", flags=re.UNICODE)
 _SENTENCE_PATTERN = re.compile(r"(?<=[.!?])\s+")
 _GENERIC_TITLE_PATTERN = re.compile(r"^finding(?:\s+\d+)?$", flags=re.IGNORECASE)
+_LABELED_METRIC_PATTERN = re.compile(r"^[A-Za-z][^:=]{0,80}\s*(?::|=)\s*\S")
+_DATE_FRAGMENT_PATTERN = re.compile(r"^\d{4}(?:[-/]\d{1,2}(?:[-/]\d{1,2})?)?$")
+_READING_TIME_PATTERN = re.compile(
+    r"\b(?:reading\s+time|read\s+time|\d+\s*(?:min(?:ute)?s?|hours?)\s+read)\b",
+    flags=re.IGNORECASE,
+)
 _STOP_WORDS = frozenset(
     {
         "a",
@@ -201,8 +207,9 @@ class ReportRefiner:
         )
         return cls._split_findings(rewritten_candidates)
 
-    @staticmethod
+    @classmethod
     def _rewritten_finding(
+        cls,
         finding: Finding,
         rewrite: CandidateRewrite | None,
     ) -> Finding:
@@ -211,7 +218,10 @@ class ReportRefiner:
             return finding
         return Finding(
             title=rewrite.title,
-            description=rewrite.description,
+            description=cls._without_heading_body_repeat(
+                rewrite.title,
+                rewrite.description,
+            ),
             supporting_chunk_ids=finding.supporting_chunk_ids,
         )
 
@@ -370,11 +380,15 @@ class ReportRefiner:
                 best_member.finding.description,
                 group.first_index,
             )
+        description = cls._without_heading_body_repeat(
+            title,
+            best_member.finding.description,
+        )
         return RefinementCandidate(
             candidate_id=f"finding-{group.first_index + 1:04d}",
             finding=Finding(
                 title=title,
-                description=best_member.finding.description,
+                description=description,
                 supporting_chunk_ids=supporting_chunk_ids,
             ),
             original_index=group.first_index,
@@ -478,20 +492,21 @@ class ReportRefiner:
                 cls._sentence_fragment(finding.description)
                 for finding in findings[:2]
             )
-            paragraphs.append(
-                "Key extracted findings include "
-                + cls._human_list(descriptions)
-                + "."
-            )
+            paragraphs.append(cls._finding_summary_sentence(descriptions))
 
         metric_or_timeline_parts: list[str] = []
-        if report.important_metrics:
+        summary_metrics = tuple(
+            metric
+            for metric in report.important_metrics
+            if cls._is_summary_worthy_metric(metric)
+        )
+        if summary_metrics:
             metric_or_timeline_parts.append(
                 "Reported metrics include "
                 + cls._human_list(
                     tuple(
                         cls._sentence_fragment(metric)
-                        for metric in report.important_metrics[:3]
+                        for metric in summary_metrics[:3]
                     )
                 )
                 + "."
@@ -525,6 +540,51 @@ class ReportRefiner:
         if not paragraphs:
             return "No factual content was extracted from the supplied knowledge objects."
         return "\n\n".join(paragraphs[:4])
+
+    @staticmethod
+    def _finding_summary_sentence(descriptions: tuple[str, ...]) -> str:
+        """Keep complete extracted findings separated as complete sentences."""
+        first, *remaining = descriptions
+        return "Key extracted findings include " + first + "." + "".join(
+            " " + description + "." for description in remaining
+        )
+
+    @classmethod
+    def _is_summary_worthy_metric(cls, value: str) -> bool:
+        """Require a label or descriptive context before narrating a metric."""
+        stripped = value.strip()
+        normalized = cls._normalize(stripped)
+        if (
+            not stripped
+            or _DATE_FRAGMENT_PATTERN.fullmatch(stripped)
+            or _READING_TIME_PATTERN.search(stripped)
+            or "reading time" in normalized
+        ):
+            return False
+        if _LABELED_METRIC_PATTERN.match(stripped):
+            return True
+        tokens = cls._tokens(stripped)
+        has_number = any(token.isdigit() for token in tokens)
+        context_words = tuple(token for token in tokens if not token.isdigit())
+        return has_number and len(context_words) >= 2
+
+    @classmethod
+    def _without_heading_body_repeat(cls, title: str, description: str) -> str:
+        """Drop a duplicated structural heading only when its subject repeats."""
+        heading = title.strip()
+        body = description.strip()
+        heading_tokens = cls._tokens(heading)
+        if (
+            len(heading_tokens) < 3
+            or len(heading_tokens) > 12
+            or not body.casefold().startswith(heading.casefold())
+        ):
+            return description
+        remainder = body[len(heading) :].lstrip(" \t:-—")
+        remainder_tokens = cls._tokens(remainder)
+        if not remainder_tokens or remainder_tokens[0] != heading_tokens[-1]:
+            return description
+        return remainder
 
     @staticmethod
     def _title_from_description(description: str, original_index: int) -> str:

@@ -169,8 +169,8 @@ def test_markdown_cites_each_claim_with_source_evidence_order() -> None:
     assert "#### Primary finding" in markdown
     assert "A supported primary claim." in markdown
     assert "*Evidence: 2 sources; Sources: Source 2, Source 1*" in markdown
-    assert "### 2026" in markdown
-    assert "Document records the date 2026." in markdown
+    assert "### 2026" not in markdown
+    assert "Document records the date 2026." not in markdown
     assert "#### Thematic section" in markdown
     assert "A supported thematic claim." in markdown
     assert "#### Appendix finding" in markdown

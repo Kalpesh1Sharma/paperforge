@@ -292,9 +292,10 @@ class EnhancedReportRenderContext:
     def from_report(
         cls,
         report: EnhancedResearchReport,
+        source_filename: str | None = None,
     ) -> "EnhancedReportRenderContext":
         """Build one stable context, using deterministic fields as a fallback."""
-        citation_index = CitationIndex.from_report(report)
+        citation_index = CitationIndex.from_report(report, source_filename)
         intelligence = report.report_intelligence
         finding_overrides = cls._finding_overrides(intelligence)
         visible_intelligent_entities = cls._visible_intelligent_entities(report)

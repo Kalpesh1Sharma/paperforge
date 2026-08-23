@@ -4,6 +4,7 @@ import re
 
 from pydantic import ValidationError
 
+from app.config import settings
 from app.reports.composer import ReportComposer
 from app.reports.enhanced_models import EnhancedResearchReport
 from app.reports.exceptions import (
@@ -40,6 +41,7 @@ class HTMLRenderer:
         try:
             rendered_html = get_html_template("report.html.j2").render(
                 presentation=presentation,
+                publication_version=f"v{settings.app_version}",
                 css=load_html_asset("report.css"),
                 print_css=load_html_asset("print.css"),
                 empty_state=_EMPTY_STATE,

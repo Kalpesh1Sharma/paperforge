@@ -298,6 +298,7 @@ class InsightCard(_PresentationBaseModel):
     key: str = Field(min_length=1)
     title: str = Field(min_length=1)
     summary: str = Field(min_length=1)
+    summary_includes_title: bool = False
     importance: ImportanceLabel | None = None
     evidence: PresentationEvidence
 
@@ -679,15 +680,24 @@ class PresentationModel(_PresentationBaseModel):
 
     @model_validator(mode="after")
     def validate_fixed_section_navigation(self) -> "PresentationModel":
-        """Guarantee section and TOC order are data-driven and identical."""
-        expected_sections = PRESENTATION_SECTION_SPECS
+        """Require an ordered, canonical subset with an exact TOC projection."""
+        known_sections = {key: (heading, anchor_id) for key, heading, anchor_id in PRESENTATION_SECTION_SPECS}
         actual_sections = tuple(
             (section.key, section.heading, section.anchor_id)
             for section in self.sections
         )
-        if actual_sections != expected_sections:
+        actual_keys = tuple(section.key for section in self.sections)
+        expected_keys = tuple(key for key, _, _ in PRESENTATION_SECTION_SPECS)
+        if (
+            len(set(actual_keys)) != len(actual_keys)
+            or actual_keys != tuple(key for key in expected_keys if key in actual_keys)
+            or any(
+                known_sections.get(key) != (heading, anchor_id)
+                for key, heading, anchor_id in actual_sections
+            )
+        ):
             raise ValueError(
-                "PresentationModel sections must match the fixed presentation order."
+                "PresentationModel sections must be an ordered subset of known section specifications."
             )
 
         expected_entries = tuple(

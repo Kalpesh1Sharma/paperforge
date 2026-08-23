@@ -42,7 +42,7 @@ _SECOND_CHUNK_ID = UUID("87654321-4321-8765-4321-876543218765")
 
 
 def _assert_html_presentation_contract(html: str) -> None:
-    """Assert the fixed, composer-owned publication navigation and layout."""
+    """Assert composer-owned navigation for the rendered section subset."""
     assert '<article id="report-content" class="publication-report"' in html
     assert '<header id="cover-page" class="cover-page"' in html
     assert '<nav id="table-of-contents" class="table-of-contents"' in html
@@ -53,11 +53,14 @@ def _assert_html_presentation_contract(html: str) -> None:
     section_markers = tuple(
         f'<h2 id="{anchor_id}-heading">{heading}</h2>'
         for _, heading, anchor_id in PRESENTATION_SECTION_SPECS
+        if f'<h2 id="{anchor_id}-heading">{heading}</h2>' in html
     )
     positions = tuple(html.index(marker) for marker in section_markers)
 
     assert positions == tuple(sorted(positions))
     for _, heading, anchor_id in PRESENTATION_SECTION_SPECS:
+        if f'<h2 id="{anchor_id}-heading">{heading}</h2>' not in html:
+            continue
         assert f'<a class="toc-link" href="#{anchor_id}">' in html
         assert f'<span class="toc-title">{heading}</span>' in html
         assert f'data-target="#{anchor_id}"' in html
@@ -195,17 +198,17 @@ def test_html_renderer_produces_stable_self_contained_document() -> None:
     assert first.count("break-before: page;") == 1
     assert "counter-reset: publication-reference;" in first
     assert "counter-increment: publication-reference;" in first
-    assert "PaperForge v0.9.0" in first
+    assert "PaperForge v0.9.1" in first
     assert "Prepared by" in first and "Prepared from" in first
     assert "<figure class=\"evidence-table\">" in first
     assert "<figcaption" in first
     assert 'class="section-prose section-prose--abstract"' in first
     assert 'class="section-prose section-prose--executive-summary"' in first
     assert 'class="section-lead"' in first
-    assert 'class="confidence-meter" aria-hidden="true"' in first
-    assert 'class="status-badge">AI-enhanced</span>' in first
+    assert 'class="confidence-meter" aria-hidden="true"' not in first
+    assert 'class="status-badge">AI-enhanced</span>' not in first
     assert "The findings below organize technical material for focused review." in first
-    assert "Entities relevant to this report are listed by category." in first
+    assert "Entities relevant to this report are listed by category." not in first
     assert "<dt>Generated</dt><dd>Not available</dd>" in first
     assert '<link rel="stylesheet"' not in first
     assert "<script" not in first.lower()
@@ -225,10 +228,10 @@ def test_html_renderer_renders_required_content_in_layout_order() -> None:
     assert "PaperForge" in html
     assert "Evidence means supporting information." in html
     assert "95%" in html
-    assert "2026-07-29" in html
+    assert "Extracted date: 2026-07-29" not in html
     assert "https://example.com/source" in html
     assert "The documented work covers backend APIs and middleware." in html
-    assert "General" in html
+    assert "General" not in html
     assert "Source 1" in html
     assert str(_CHUNK_ID) not in html
 
@@ -254,7 +257,7 @@ def test_html_renderer_uses_semantic_publication_metadata_and_toc_references() -
     html = HTMLRenderer().render_presentation(presentation)
 
     assert '<header id="cover-page" class="cover-page"' in html
-    assert "PaperForge v0.9.0" in html
+    assert "PaperForge v0.9.1" in html
     assert "<dt>Prepared by</dt><dd>PaperForge</dd>" in html
     assert "<dt>Prepared from</dt><dd>source.pdf</dd>" in html
     assert "<dt>Document type</dt><dd>PDF</dd>" in html
@@ -296,8 +299,8 @@ def test_html_renderer_escapes_dynamic_content() -> None:
     assert "&lt;script&gt;alert(&#39;unsafe&#39;)&lt;/script&gt;" in html
 
 
-def test_html_renderer_renders_empty_collections_with_accessible_empty_states() -> None:
-    """Every required collection section remains visible when it has no content."""
+def test_html_renderer_omits_empty_collections_without_placeholder_prose() -> None:
+    """Publication rendering does not create empty sections or placeholder prose."""
     report = _enhanced_report(
         base_report=_base_report(include_content=False),
         include_enhancements=False,
@@ -306,10 +309,9 @@ def test_html_renderer_renders_empty_collections_with_accessible_empty_states() 
     html = HTMLRenderer().render(report)
 
     _assert_html_presentation_contract(html)
-    # Evidence Summary always retains deterministic compression accounting.
-    assert html.count("No information was extracted for this section.") == 4
-    assert html.count('class="empty-state"') == 4
-    assert "Compression Statistics" in html
+    assert "No information was extracted for this section." not in html
+    assert 'class="empty-state"' not in html
+    assert "Compression Statistics" not in html
     assert "Professional Experience" not in html
 
 
@@ -391,10 +393,8 @@ def test_html_renderer_renders_a_nullable_model_generically() -> None:
 
     _assert_html_presentation_contract(html)
     assert "Deterministic fallback summary." in html
-    assert "Synthesis provider" in html
-    assert "fallback" in html
-    assert "Synthesis model" in html
-    assert "Not applicable" in html
+    assert "Synthesis provider" not in html
+    assert "Synthesis model" not in html
 
 
 def test_html_renderer_renders_appendix_findings_with_source_labels() -> None:
@@ -521,14 +521,13 @@ def test_html_renderer_renders_optional_intelligence_through_safe_context() -> N
     assert "&lt;strong&gt;Performance improvement&lt;/strong&gt;" in first
     assert "<strong>Performance improvement</strong>" not in first
     assert "HIGH" in first
-    assert "LOW" in first
     # Display confidence is calibrated in the shared presentation context;
     # raw immutable model values remain untouched.
     assert "<dt>Confidence</dt><dd>100%</dd>" in first
     assert "<dt>Confidence</dt><dd>60%</dd>" in first
     assert "2 sources" in first
-    assert "Organizations" in first
-    assert "Also known as: PF" in first
+    assert "Organizations" not in first
+    assert "Also known as: PF" not in first
     assert "Related concepts" in first and "Provenance" in first
     assert "https://example.com/consolidated" in first
     assert "Source 1" in first and "Source 2" in first
@@ -578,17 +577,9 @@ def test_html_renderer_groups_findings_and_hides_ranked_entity_overflow() -> Non
     html = HTMLRenderer().render_presentation(presentation)
 
     _assert_html_presentation_contract(html)
-    overview = next(
-        section
-        for section in presentation.sections
-        if section.anchor_id == "document-overview"
-    )
-    assert len(overview.entity_groups[0].entities) == 8
-    assert len(presentation.hidden_content.entity_groups[0].entities) == 2
-    for index in range(1, 9):
-        assert f"Entity {index:02d}" in html
-    assert "Entity 09" not in html
-    assert "Entity 10" not in html
+    assert len(presentation.hidden_content.entity_groups[0].entities) == 10
+    for index in range(1, 11):
+        assert f"Entity {index:02d}" not in html
     assert len(report.report_intelligence.entity_groups[0].entities) == 10
 
 
@@ -605,16 +596,8 @@ def test_html_renderer_renders_visible_metrics_and_statistics_not_hidden_content
         columns=("Category", "Extracted", "Displayed", "Appendix", "Hidden"),
         rows=(("Findings", "20", "8", "5", "7"),),
     )
-    appendix_table = EvidenceTable(
-        title="Supporting Statistics",
-        columns=("Measure", "Count"),
-        rows=(("Duplicate findings", "2"),),
-    )
     evidence_section = next(
         section for section in presentation.sections if section.key == "evidence-summary"
-    )
-    appendix_section = next(
-        section for section in presentation.sections if section.key == "appendix"
     )
     hidden_finding = InsightCard(
         key="hidden-overflow-finding",
@@ -628,24 +611,11 @@ def test_html_renderer_renders_visible_metrics_and_statistics_not_hidden_content
             + (metrics_table, compression_table)
         }
     )
-    updated_appendix = appendix_section.model_copy(
-        update={
-            "appendix_groups": appendix_section.appendix_groups
-            + (
-                AppendixGroup(
-                    heading="Supporting Statistics",
-                    evidence_tables=(appendix_table,),
-                ),
-            )
-        }
-    )
     updated_presentation = presentation.model_copy(
         update={
             "sections": tuple(
                 updated_evidence
                 if section.key == "evidence-summary"
-                else updated_appendix
-                if section.key == "appendix"
                 else section
                 for section in presentation.sections
             ),
@@ -661,11 +631,8 @@ def test_html_renderer_renders_visible_metrics_and_statistics_not_hidden_content
     assert "<figcaption" in html and "Key Metrics</figcaption>" in html
     assert "<th scope=\"col\">Metric</th><th scope=\"col\">Value</th>" in html
     assert "Total pages" in html and "35%" in html
-    assert "evidence-table--compression-statistics" in html
-    assert "Findings" in html and ">20<" in html
-    assert "Supporting Statistics" in html
-    assert "evidence-table--appendix-statistics" in html
-    assert "Duplicate findings" in html
+    assert "Compression Statistics</figcaption>" not in html
+    assert ">20<" not in html
     assert "Hidden overflow finding" not in html
 
 

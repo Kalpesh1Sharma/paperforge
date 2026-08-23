@@ -35,7 +35,7 @@
   <article id="report-content" class="publication-report" aria-labelledby="report-title">
     <header id="cover-page" class="cover-page" aria-labelledby="report-title">
       <div class="cover-rule" aria-hidden="true"></div>
-      <p class="publication-mark">PaperForge v0.9.0</p>
+      <p class="publication-mark">PaperForge {{ publication_version }}</p>
       <p class="cover-kicker">Research report</p>
       <h1 id="report-title">{{ presentation.cover.title }}</h1>
       <p class="cover-deck">A technical research publication prepared for focused reading and evidence review.</p>
@@ -48,12 +48,14 @@
           <div><dt>Document type</dt><dd>{{ presentation.cover.file_type or "Not available" }}</dd></div>
           <div><dt>Total pages</dt><dd>{{ presentation.cover.page_count if presentation.cover.page_count is not none else "Not available" }}</dd></div>
           <div><dt>Generated</dt><dd>{% if presentation.cover.generated_on is not none %}<time datetime="{{ presentation.cover.generated_on.isoformat() }}">{{ presentation.cover.generated_on.isoformat() }}</time>{% else %}Not available{% endif %}</dd></div>
+{% if presentation.mode in ("technical", "full") %}
           <div><dt>Knowledge objects analyzed</dt><dd>{{ presentation.cover.knowledge_object_count }}</dd></div>
           <div><dt>Evidence sources</dt><dd>{{ presentation.cover.evidence_source_count }}</dd></div>
           <div class="cover-confidence"><dt>Confidence summary</dt><dd>{% if presentation.cover.mean_confidence is not none %}<span>{{ (presentation.cover.mean_confidence * 100) | round | int }}%</span><span class="confidence-meter" aria-hidden="true"><span class="confidence-meter-fill" style="inline-size: {{ (presentation.cover.mean_confidence * 100) | round | int }}%;"></span></span>{% else %}Not available{% endif %}</dd></div>
           <div class="cover-status"><dt>Report status</dt><dd><span class="status-badge">{{ presentation.cover.status }}</span></dd></div>
           <div><dt>Synthesis provider</dt><dd>{{ presentation.cover.provider or "Not available" }}</dd></div>
           <div><dt>Synthesis model</dt><dd>{{ presentation.cover.model or "Not applicable" }}</dd></div>
+{% endif %}
         </dl>
       </aside>
     </header>
@@ -92,22 +94,29 @@
 
 {% for group in section.finding_groups %}
 {% set finding_group_index = loop.index %}
-      <section class="finding-group" aria-labelledby="{{ section.anchor_id }}-finding-group-{{ loop.index }}">
+{% set suppress_general_heading = presentation.mode in ("professional", "executive") and section.key == "technical-analysis" and group.heading == "General" and group.findings|length == 1 %}
+      <section class="finding-group"{% if not suppress_general_heading %} aria-labelledby="{{ section.anchor_id }}-finding-group-{{ loop.index }}"{% endif %}>
+{% if not suppress_general_heading %}
         <header><h3 id="{{ section.anchor_id }}-finding-group-{{ loop.index }}">{{ group.heading }}</h3></header>
+{% endif %}
 {% if section.key == "technical-analysis" %}
         <p class="finding-group-note">The findings below organize technical material for focused review.</p>
 {% endif %}
         <ol class="insight-list insight-list--{{ section.key }}">
 {% for finding in group.findings %}
           <li>
-            <article class="insight" aria-labelledby="{{ section.anchor_id }}-finding-group-{{ finding_group_index }}-finding-{{ loop.index }}">
+            <article class="insight"{% if not finding.summary_includes_title %} aria-labelledby="{{ section.anchor_id }}-finding-group-{{ finding_group_index }}-finding-{{ loop.index }}"{% endif %}>
               <header>
+{% if not finding.summary_includes_title %}
                 <h4 id="{{ section.anchor_id }}-finding-group-{{ finding_group_index }}-finding-{{ loop.index }}">{{ finding.title }}</h4>
+{% endif %}
 {% if finding.importance %}
                 <p class="importance-label">{{ finding.importance }}</p>
 {% endif %}
               </header>
+{% if finding.summary_includes_title or finding.summary != finding.title %}
               <p>{{ finding.summary }}</p>
+{% endif %}
 {{ evidence_details(finding.evidence) }}
             </article>
           </li>
@@ -180,6 +189,7 @@
 {% endif %}
 
 {% for table in section.evidence_tables %}
+{% if presentation.mode in ("technical", "full") or table.title not in ("Compression Statistics", "Composition Details") %}
       <figure class="evidence-table{% if table.title == 'Key Metrics' %} evidence-table--key-metrics{% endif %}{% if table.title == 'Compression Statistics' %} evidence-table--compression-statistics{% endif %}">
         <figcaption id="{{ section.anchor_id }}-table-{{ loop.index }}-caption">{{ table.title }}</figcaption>
         <div class="table-scroll">
@@ -194,6 +204,7 @@
           </table>
         </div>
       </figure>
+{% endif %}
 {% endfor %}
 
 {% for appendix_group in section.appendix_groups %}
@@ -203,7 +214,7 @@
 {% if appendix_group.findings %}
         <ol class="insight-list appendix-findings">
 {% for finding in appendix_group.findings %}
-          <li><article class="insight"><header><h4>{{ finding.title }}</h4></header><p>{{ finding.summary }}</p>{{ evidence_details(finding.evidence) }}</article></li>
+          <li><article class="insight"><header>{% if not finding.summary_includes_title %}<h4>{{ finding.title }}</h4>{% endif %}</header>{% if finding.summary_includes_title or finding.summary != finding.title %}<p>{{ finding.summary }}</p>{% endif %}{{ evidence_details(finding.evidence) }}</article></li>
 {% endfor %}
         </ol>
 {% endif %}
@@ -232,6 +243,7 @@
         </ol>
 {% endif %}
 {% for table in appendix_group.evidence_tables %}
+{% if presentation.mode in ("technical", "full") or table.title not in ("Compression Statistics", "Composition Details") %}
         <figure class="evidence-table evidence-table--appendix-statistics{% if table.title == 'Key Metrics' %} evidence-table--key-metrics{% endif %}{% if table.title == 'Compression Statistics' %} evidence-table--compression-statistics{% endif %}">
           <figcaption id="{{ section.anchor_id }}-appendix-group-{{ appendix_group_index }}-table-{{ loop.index }}-caption">{{ table.title }}</figcaption>
           <div class="table-scroll">
@@ -246,6 +258,7 @@
             </table>
           </div>
         </figure>
+{% endif %}
 {% endfor %}
       </section>
 {% endfor %}

@@ -248,6 +248,81 @@ def test_refiner_builds_content_aware_summary_without_object_count_placeholder()
     assert ".." not in plan.executive_summary
 
 
+def test_refiner_omits_contextless_metric_summary_prose_but_keeps_valid_metrics() -> None:
+    """Bare values, dates, and reading metadata do not become a fake metric sentence."""
+    chunk_id = uuid4()
+    finding = Finding(
+        title="Finding 1",
+        description="The document describes a supported result.",
+        supporting_chunk_ids=(chunk_id,),
+    )
+
+    residue = ReportRefiner.build_plan(
+        _report((finding,), metrics=("27", "7 min read", "300", "2025")),
+        (_knowledge(chunk_id),),
+    )
+    contextual = ReportRefiner.build_plan(
+        _report(
+            (finding,),
+            metrics=("Revenue: $2.7M", "Accuracy: 92%", "300 million copies sold"),
+        ),
+        (_knowledge(chunk_id),),
+    )
+
+    assert "Reported metrics include" not in residue.executive_summary
+    assert "Reported metrics include Revenue: $2.7M, Accuracy: 92%, and 300 million copies sold." in contextual.executive_summary
+
+
+def test_refiner_removes_only_a_repeated_heading_to_body_boundary() -> None:
+    """A structural heading is not repeated immediately before its own subject sentence."""
+    chunk_id = uuid4()
+    plan = ReportRefiner.build_plan(
+        _report(
+            (
+                Finding(
+                    title="The Open-Ended Nature of Minecraft",
+                    description=(
+                        "The Open-Ended Nature of Minecraft Minecraft is unique "
+                        "because players can shape its world."
+                    ),
+                    supporting_chunk_ids=(chunk_id,),
+                ),
+            )
+        ),
+        (_knowledge(chunk_id),),
+    )
+
+    assert plan.findings[0].description == (
+        "Minecraft is unique because players can shape its world."
+    )
+
+
+def test_refiner_keeps_complete_finding_sentences_separate_in_the_summary() -> None:
+    """Fallback prose never joins two sentence fragments with a dangling conjunction."""
+    first_id = uuid4()
+    second_id = uuid4()
+    plan = ReportRefiner.build_plan(
+        _report(
+            (
+                Finding(
+                    title="Finding 1",
+                    description="Minecraft has a procedurally generated world.",
+                    supporting_chunk_ids=(first_id,),
+                ),
+                Finding(
+                    title="Finding 2",
+                    description="Since its alpha release, Minecraft has expanded.",
+                    supporting_chunk_ids=(second_id,),
+                ),
+            )
+        ),
+        (_knowledge(first_id), _knowledge(second_id)),
+    )
+
+    assert "world. Since its alpha release" in plan.executive_summary
+    assert "world and Since" not in plan.executive_summary
+
+
 def test_refiner_applies_only_exact_provenance_ai_rewrites() -> None:
     """Rewording can improve wording but cannot change canonical evidence."""
     chunk_id = uuid4()

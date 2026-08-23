@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
+from app.config import settings
 from app.reports.composer import ReportComposer
 from app.reports.enhanced_models import (
     EnhancedResearchReport,
@@ -43,11 +44,12 @@ from app.reports.presentation_models import (
     PresentationModel,
     PresentationSection,
     ReferenceCard,
+    ReportMode,
     TimelineCard,
 )
 
 
-_PUBLICATION_VERSION = "v0.9.0"
+_PUBLICATION_VERSION = f"v{settings.app_version}"
 _UNAVAILABLE = "Not available"
 
 
@@ -181,7 +183,6 @@ class MarkdownRenderer:
                 "| Publication detail | Value |",
                 "| --- | --- |",
                 f"| Research domain | {cover.domain} |",
-                f"| Report status | {cover.status} |",
                 f"| Generated | {generated_on} |",
             )
         )
@@ -223,6 +224,11 @@ class MarkdownRenderer:
                 cls._presentation_finding_group_block(
                     group,
                     heading_level=3,
+                    show_heading=not cls._is_isolated_general_technical_group(
+                        presentation,
+                        section.key,
+                        group,
+                    ),
                 )
             )
 
@@ -249,7 +255,12 @@ class MarkdownRenderer:
                 for event in section.timeline
             )
 
-        for index, table in enumerate(section.evidence_tables, start=1):
+        visible_tables = tuple(
+            table
+            for table in section.evidence_tables
+            if cls._is_reader_facing_table(presentation.mode, table)
+        )
+        for index, table in enumerate(visible_tables, start=1):
             blocks.append(cls._presentation_table_block(table, index))
 
         for appendix_group in section.appendix_groups:
@@ -293,19 +304,24 @@ class MarkdownRenderer:
             if cover.page_count is not None
             else _UNAVAILABLE
         )
-        rows = (
+        rows = [
             ("Document", cover.filename or _UNAVAILABLE),
             ("Research domain", cover.domain),
             ("Document type", cover.file_type or _UNAVAILABLE),
             ("Pages", page_count),
-            ("Knowledge objects", str(cover.knowledge_object_count)),
-            ("Evidence sources", str(cover.evidence_source_count)),
-            ("Confidence", confidence),
-            ("Status", cover.status),
-            ("Provider", cover.provider or _UNAVAILABLE),
-            ("Model", cover.model or "Not applicable"),
             ("Generated", generated_on),
-        )
+        ]
+        if presentation.mode in {ReportMode.TECHNICAL, ReportMode.FULL}:
+            rows.extend(
+                (
+                    ("Knowledge objects", str(cover.knowledge_object_count)),
+                    ("Evidence sources", str(cover.evidence_source_count)),
+                    ("Confidence", confidence),
+                    ("Status", cover.status),
+                    ("Provider", cover.provider or _UNAVAILABLE),
+                    ("Model", cover.model or "Not applicable"),
+                )
+            )
         table_rows = "\n".join(
             f"| {label} | {value} |" for label, value in rows
         )
@@ -325,6 +341,7 @@ class MarkdownRenderer:
         group: GroupedFinding,
         *,
         heading_level: int,
+        show_heading: bool = True,
     ) -> str:
         """Render evidence-backed findings as short research discussions."""
         heading = "#" * heading_level
@@ -335,7 +352,22 @@ class MarkdownRenderer:
             )
             for insight in group.findings
         )
-        return f"{heading} {group.heading}\n\n" + "\n\n".join(discussions)
+        body = "\n\n".join(discussions)
+        return f"{heading} {group.heading}\n\n{body}" if show_heading else body
+
+    @staticmethod
+    def _is_isolated_general_technical_group(
+        presentation: PresentationModel,
+        section_key: str,
+        group: GroupedFinding,
+    ) -> bool:
+        """Avoid a generic subheading for one publication-mode technical card."""
+        return (
+            presentation.mode in {ReportMode.PROFESSIONAL, ReportMode.EXECUTIVE}
+            and section_key == "technical-analysis"
+            and group.heading == "General"
+            and len(group.findings) == 1
+        )
 
     @classmethod
     def _presentation_finding_discussion(
@@ -347,16 +379,33 @@ class MarkdownRenderer:
         """Format one finding with narrative, evidence, and source citations."""
         evidence = insight.evidence
         heading = "#" * heading_level
-        return "\n\n".join(
-            (
-                f"{heading} {insight.title}",
-                insight.summary,
-                cls._evidence_detail_block(
-                    evidence,
-                    importance=insight.importance,
-                ),
+        blocks: list[str] = []
+        if not insight.summary_includes_title:
+            blocks.append(f"{heading} {insight.title}")
+        if cls._has_distinct_summary(insight):
+            blocks.append(insight.summary)
+        blocks.append(
+            cls._evidence_detail_block(
+                evidence,
+                importance=insight.importance,
             )
         )
+        return "\n\n".join(blocks)
+
+    @staticmethod
+    def _has_distinct_summary(insight: InsightCard) -> bool:
+        """Avoid printing identical title and body prose as separate content."""
+        if insight.summary_includes_title:
+            return True
+        normalize = lambda value: " ".join(value.casefold().split()).rstrip(".?!")
+        return normalize(insight.title) != normalize(insight.summary)
+
+    @staticmethod
+    def _is_reader_facing_table(mode: ReportMode, table: EvidenceTable) -> bool:
+        """Keep internal composition accounting out of publication modes."""
+        if mode in {ReportMode.PROFESSIONAL, ReportMode.EXECUTIVE}:
+            return table.title not in {"Compression Statistics", "Composition Details"}
+        return True
 
     @classmethod
     def _presentation_entity_group_block(

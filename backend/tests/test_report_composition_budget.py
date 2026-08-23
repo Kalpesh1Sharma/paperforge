@@ -33,20 +33,31 @@ def _section(model: object, key: str):
     return next(section for section in model.sections if section.key == key)
 
 
-def _finding_cards(section: object) -> tuple[InsightCard, ...]:
+def _optional_section(model: object, key: str):
+    """Return a known section only when it has substantive composed content."""
+    return next((section for section in model.sections if section.key == key), None)
+
+
+def _finding_cards(section: object | None) -> tuple[InsightCard, ...]:
     """Flatten typed groups for concise cardinality assertions."""
+    if section is None:
+        return ()
     return tuple(card for group in section.finding_groups for card in group.findings)
 
 
 def _appendix_findings(model: object) -> tuple[InsightCard, ...]:
     """Return every appendix finding without relying on group display order."""
-    appendix = _section(model, "appendix")
+    appendix = _optional_section(model, "appendix")
+    if appendix is None:
+        return ()
     return tuple(card for group in appendix.appendix_groups for card in group.findings)
 
 
 def _appendix_concepts(model: object) -> tuple[object, ...]:
     """Return every appendix concept without coupling to headings."""
-    appendix = _section(model, "appendix")
+    appendix = _optional_section(model, "appendix")
+    if appendix is None:
+        return ()
     return tuple(card for group in appendix.appendix_groups for card in group.concepts)
 
 
@@ -255,10 +266,7 @@ def test_professional_composition_preserves_overflow_and_accounts_for_compressio
     )
     assert len(_section(first, "historical-timeline").timeline) <= budget.timeline_limit
     assert len(_section(first, "important-concepts").concepts) <= budget.primary_concepts_limit
-    assert all(
-        len(group.entities) <= budget.entities_per_category_limit
-        for group in _section(first, "document-overview").entity_groups
-    )
+    assert first.hidden_content.entity_groups
     assert len(_appendix_findings(first)) <= budget.appendix_findings_limit
     assert len(_appendix_concepts(first)) <= budget.appendix_concepts_limit
     assert len(_section(first, "evidence-summary").references) <= budget.primary_references_limit
@@ -345,9 +353,11 @@ def test_composer_rejects_duplicates_and_parser_artifacts_from_all_presentation_
     )
 
     model = ReportComposer().compose(report)
-    all_visible = _finding_cards(_section(model, "key-insights")) + _finding_cards(
-        _section(model, "technical-analysis")
-    ) + _appendix_findings(model)
+    all_visible = (
+        _finding_cards(_optional_section(model, "key-insights"))
+        + _finding_cards(_optional_section(model, "technical-analysis"))
+        + _appendix_findings(model)
+    )
     finding_statistic = next(
         statistic
         for statistic in model.compression_statistics
@@ -477,11 +487,11 @@ def test_zero_limits_suppress_visible_allocations_without_losing_inventory() -> 
 
     assert model.mode is ReportMode.EXECUTIVE
     assert model.budget == budget
-    assert _section(model, "abstract").intro == ()
-    assert _section(model, "executive-summary").intro == ()
-    assert _finding_cards(_section(model, "key-insights")) == ()
-    assert _finding_cards(_section(model, "technical-analysis")) == ()
-    assert _section(model, "evidence-summary").evidence_tables == ()
+    assert _optional_section(model, "abstract") is None
+    assert _optional_section(model, "executive-summary") is None
+    assert _finding_cards(_optional_section(model, "key-insights")) == ()
+    assert _finding_cards(_optional_section(model, "technical-analysis")) == ()
+    assert _optional_section(model, "evidence-summary") is None
     assert model.hidden_content.findings
 
 
@@ -528,15 +538,14 @@ def test_composer_curates_artifacts_and_duplicate_supported_sections_once() -> N
     )
 
     model = ReportComposer().compose(report)
-    overview = _section(model, "document-overview")
     concepts = _section(model, "important-concepts")
     key_insights = _finding_cards(_section(model, "key-insights"))
-    technical = _finding_cards(_section(model, "technical-analysis"))
+    technical = _finding_cards(_optional_section(model, "technical-analysis"))
     statistics = {
         statistic.category: statistic for statistic in model.compression_statistics
     }
 
-    assert tuple(entity.name for entity in overview.entity_groups[0].entities) == (
+    assert tuple(entity.name for entity in model.hidden_content.entity_groups[0].entities) == (
         "PaperForge",
     )
     assert tuple(concept.concept for concept in concepts.concepts) == ("Evidence",)

@@ -27,22 +27,31 @@ class CitationIndex:
         self._sources = sources
 
     @classmethod
-    def from_report(cls, report: EnhancedResearchReport) -> "CitationIndex":
-        """Build labels from evidence order, then first rendered occurrence."""
+    def from_report(
+        cls,
+        report: EnhancedResearchReport,
+        source_filename: str | None = None,
+    ) -> "CitationIndex":
+        """Build labels from evidence order, using source context when available."""
         labels: dict[UUID, str] = {}
         sources: list[CitationSource] = []
         has_source_evidence = bool(report.synthesis_metadata.source_evidence)
+        label_prefix = (
+            source_filename.strip()
+            if isinstance(source_filename, str) and source_filename.strip()
+            else None
+        )
 
         for evidence in report.synthesis_metadata.source_evidence:
             if evidence.chunk_id in labels:
                 continue
-            label = cls._next_label(labels)
+            label = cls._next_label(labels, label_prefix)
             labels[evidence.chunk_id] = label
             sources.append(CitationSource(label, evidence.references))
 
         for chunk_id in cls._referenced_chunk_ids(report):
             if chunk_id not in labels:
-                label = cls._next_label(labels)
+                label = cls._next_label(labels, label_prefix)
                 labels[chunk_id] = label
                 sources.append(CitationSource(label, ()))
 
@@ -71,9 +80,12 @@ class CitationIndex:
         return tuple(self._labels[chunk_id] for chunk_id in chunk_ids)
 
     @staticmethod
-    def _next_label(labels: dict[UUID, str]) -> str:
+    def _next_label(labels: dict[UUID, str], source_filename: str | None) -> str:
         """Return the next stable one-based source label."""
-        return f"Source {len(labels) + 1}"
+        position = len(labels) + 1
+        if source_filename is not None:
+            return f"{source_filename} · excerpt {position}"
+        return f"Source {position}"
 
     @staticmethod
     def _attach_legacy_references(

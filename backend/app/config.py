@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     app_name: str = "PaperForge"
-    app_version: str = "0.9.0"
+    app_version: str = "0.9.1"
     upload_dir: Path = Path(__file__).resolve().parent.parent / "uploads"
     report_storage_dir: Path = Path(__file__).resolve().parent.parent / "reports"
     max_upload_size_bytes: int = 50 * 1024 * 1024
