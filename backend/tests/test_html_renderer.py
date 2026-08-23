@@ -198,7 +198,7 @@ def test_html_renderer_produces_stable_self_contained_document() -> None:
     assert first.count("break-before: page;") == 1
     assert "counter-reset: publication-reference;" in first
     assert "counter-increment: publication-reference;" in first
-    assert "PaperForge v0.11.0" in first
+    assert "PaperForge v0.12.0" in first
     assert "Prepared by" in first and "Prepared from" in first
     assert "<figure class=\"evidence-table\">" in first
     assert "<figcaption" in first
@@ -257,7 +257,7 @@ def test_html_renderer_uses_semantic_publication_metadata_and_toc_references() -
     html = HTMLRenderer().render_presentation(presentation)
 
     assert '<header id="cover-page" class="cover-page"' in html
-    assert "PaperForge v0.11.0" in html
+    assert "PaperForge v0.12.0" in html
     assert "<dt>Prepared by</dt><dd>PaperForge</dd>" in html
     assert "<dt>Prepared from</dt><dd>source.pdf</dd>" in html
     assert "<dt>Document type</dt><dd>PDF</dd>" in html

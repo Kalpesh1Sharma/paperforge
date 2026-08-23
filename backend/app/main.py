@@ -5,6 +5,7 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi import Request
 from fastapi.responses import Response
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.errors import install_error_handlers
 from app.api.routes.health import router as health_router
@@ -30,6 +31,14 @@ app = FastAPI(
         {"name": "Reports", "description": "Report generation and retrieval."},
         {"name": "Upload", "description": "Temporary research-file uploads."},
     ],
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Accept"],
 )
 
 

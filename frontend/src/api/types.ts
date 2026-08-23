@@ -1,0 +1,9 @@
+export type DocumentMetadata = { filename: string; file_type: string; page_count: number | null; word_count: number; character_count: number };
+export type CreationResponse = { report_id: string; status: "completed"; available_formats: string[]; metadata?: DocumentMetadata; documents?: DocumentMetadata[] };
+export type ReportMetadata = { report_id: string; status: "completed"; available_formats: string[]; document?: DocumentMetadata; documents?: DocumentMetadata[]; generation: { provider: string; model: string | null; elapsed_ms: number; successful: boolean; fallback: boolean; enhanced: boolean; reason: string | null } };
+export type ChangeOperation = "edit" | "create" | "delete";
+export type ReviewChange = { change_id: string; operation: ChangeOperation; chunk_id: string | null; document_id: string | null; old_html: string | null; new_html: string | null; ai_explanation: string | null; insert_after_chunk_id: string | null; insert_before_chunk_id: string | null };
+export type ReviewStatus = "awaiting_approval" | "processing" | "completed" | "failed" | "cancelled" | "needs_attention";
+export type ReviewState = { report_id: string; status: ReviewStatus; pending_changes: ReviewChange[]; approved_changes: ReviewChange[]; rejected_changes: ReviewChange[]; final_docx_available: boolean };
+export type Health = { status: "healthy"; service: string; version: string; ready: true };
+export type ApiError = { code: string; message: string; request_id: string };

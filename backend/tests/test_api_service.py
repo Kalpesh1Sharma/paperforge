@@ -433,3 +433,21 @@ def test_provider_rate_limit_and_openapi_contracts_are_exposed_safely() -> None:
     assert files_schema["items"]["format"] == "binary"
     assert "/reports/{report_id}/markdown" in paths
     assert "/reports/{report_id}/metadata" in paths
+
+
+def test_local_frontend_cors_and_release_version_are_exposed_safely() -> None:
+    """Only configured Vite origins receive the unauthenticated local CORS policy."""
+    with TestClient(app) as client:
+        response = client.options(
+            "/reports",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        health = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert "credentials" not in response.headers.get("access-control-allow-credentials", "")
+    assert health.json()["version"] == "0.12.0"
