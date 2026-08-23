@@ -9,8 +9,8 @@ from fastapi import APIRouter, Depends, File, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 
 from app.api.dependencies import get_paperforge_service
-from app.schemas import ApiErrorResponse, ReportCreatedResponse, ReportMetadataResponse
-from app.services.report_service import GeneratedReport, PaperForgeService
+from app.schemas import ApiErrorResponse, MultiReportCreatedResponse, ReportCreatedResponse, ReportMetadataResponse
+from app.services.report_service import GeneratedMultiReport, GeneratedReport, PaperForgeService
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
 
@@ -42,6 +42,25 @@ def _created_response(result: GeneratedReport) -> ReportCreatedResponse:
     )
 
 
+def _multi_created_response(result: GeneratedMultiReport) -> MultiReportCreatedResponse:
+    return MultiReportCreatedResponse.model_validate(
+        {
+            "report_id": result.report_id,
+            "available_formats": result.available_formats,
+            "documents": [
+                {
+                    "filename": document.filename,
+                    "file_type": document.file_type,
+                    "page_count": document.page_count,
+                    "word_count": document.word_count,
+                    "character_count": document.character_count,
+                }
+                for document in result.source_documents
+            ],
+        }
+    )
+
+
 @router.post(
     "",
     response_model=ReportCreatedResponse,
@@ -69,6 +88,33 @@ async def create_report(
         return _created_response(result)
     finally:
         await file.close()
+
+
+@router.post(
+    "/multi",
+    response_model=MultiReportCreatedResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses=_ERROR_RESPONSES,
+    summary="Upload 2–5 PDFs and generate one grounded report",
+)
+async def create_multi_report(
+    files: Annotated[
+        list[UploadFile],
+        File(
+            description="Ordered research PDFs to process.",
+            media_type="application/pdf",
+            json_schema_extra={"items": {"type": "string", "format": "binary"}},
+        ),
+    ],
+    service: Annotated[PaperForgeService, Depends(get_paperforge_service)],
+) -> MultiReportCreatedResponse:
+    """Store ordered PDFs and execute the single combined pipeline once."""
+    try:
+        result = await service.create_multi_report(files)
+        return _multi_created_response(result)
+    finally:
+        for file in files:
+            await file.close()
 
 
 @router.get(

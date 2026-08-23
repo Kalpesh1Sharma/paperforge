@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from app.knowledge import KnowledgeObject
 from app.models.parsed_document import ParsedDocument
+from app.models.document_chunk import DocumentChunk
 from app.reports import (
     EnhancedResearchReport,
     Finding,
@@ -827,3 +828,246 @@ def test_refined_heading_body_cleanup_reaches_all_professional_finding_views() -
     assert "The Open-Ended Nature of Minecraft Minecraft" not in visible_prose
     assert "The Open-Ended Nature of Minecraft Minecraft" not in abstract
     assert "Minecraft is unique in that it lacks mandatory objectives." in abstract
+
+
+def test_multi_document_promotes_useful_appendix_findings_without_duplication() -> None:
+    """Useful canonical appendix evidence can complete multi-source key findings."""
+    source_ids = _CHUNK_IDS[:3]
+    documents = tuple(
+        ParsedDocument(
+            filename=filename,
+            file_type="pdf",
+            extracted_text=f"{filename} source evidence.",
+            page_count=pages,
+            word_count=3,
+            character_count=len(f"{filename} source evidence."),
+            metadata={},
+        )
+        for filename, pages in (
+            ("ranking-design.pdf", 2),
+            ("evaluation-methods.pdf", 3),
+            ("deployment-notes.pdf", 4),
+        )
+    )
+    chunks = tuple(
+        DocumentChunk(
+            chunk_id=chunk_id,
+            document_filename=document.filename,
+            chunk_index=0,
+            text=document.extracted_text,
+            start_char=0,
+            end_char=len(document.extracted_text),
+            word_count=document.word_count,
+            character_count=document.character_count,
+        )
+        for document, chunk_id in zip(documents, source_ids, strict=True)
+    )
+    alpha_findings = tuple(
+        Finding(
+            title=f"Ranking design finding {index + 1}",
+            description=(
+                f"The ranking design combines deterministic features and "
+                f"semantic similarity in scoring step {index + 1}."
+            ),
+            supporting_chunk_ids=(source_ids[0],),
+        )
+        for index in range(8)
+    )
+    evaluation_finding = Finding(
+        title="NDCG@10 evaluation role",
+        description=(
+            "NDCG@10 measures graded relevance among the most important "
+            "first 10 results."
+        ),
+        supporting_chunk_ids=(source_ids[1],),
+    )
+    deployment_finding = Finding(
+        title="Offline deployment role",
+        description=(
+            "The ranking service is designed for deterministic, offline "
+            "execution."
+        ),
+        supporting_chunk_ids=(source_ids[2],),
+    )
+    remaining_appendix = Finding(
+        title="Secondary audit observation",
+        description=(
+            "Secondary audit evidence documents a lower-priority validation "
+            "observation."
+        ),
+        supporting_chunk_ids=(source_ids[0],),
+    )
+    duplicate_evaluation = Finding(
+        title="NDCG@10 evaluation duplicate",
+        description=evaluation_finding.description,
+        supporting_chunk_ids=(source_ids[1],),
+    )
+    low_quality_appendix = Finding(
+        title="Home Search Categories Archive Tags",
+        description="Home Search Categories Archive Tags Home Â» Website.",
+        supporting_chunk_ids=(source_ids[2],),
+    )
+    report = EnhancedResearchReport(
+        base_report=ResearchReport(
+            title="Research Report", executive_summary="Canonical summary."
+        ),
+        executive_summary="A provider summary must not decide source coverage.",
+        findings=alpha_findings,
+        appendix_findings=(
+            evaluation_finding,
+            deployment_finding,
+            remaining_appendix,
+            duplicate_evaluation,
+            low_quality_appendix,
+        ),
+        synthesis_metadata=SynthesisMetadata(
+            provider="groq",
+            model="test-model",
+            elapsed_ms=0.0,
+            successful=True,
+            source_evidence=(
+                SynthesisSourceEvidence(chunk_id=source_ids[0], confidence=0.99),
+                SynthesisSourceEvidence(chunk_id=source_ids[1], confidence=0.80),
+                SynthesisSourceEvidence(chunk_id=source_ids[2], confidence=0.70),
+            ),
+        ),
+    )
+    report_before = deepcopy(report.model_dump(mode="python"))
+    documents_before = deepcopy(
+        tuple(document.model_dump(mode="python") for document in documents)
+    )
+    chunks_before = deepcopy(tuple(chunk.model_dump(mode="python") for chunk in chunks))
+
+    model = ReportComposer().compose(
+        report, source_documents=documents, source_chunks=chunks
+    )
+
+    key_cards = _finding_cards(_section(model, "key-insights"))
+    key_titles = tuple(card.title for card in key_cards)
+    appendix = _optional_section(model, "appendix")
+    appendix_titles = (
+        tuple(
+            card.title
+            for group in appendix.appendix_groups
+            for card in group.findings
+        )
+        if appendix is not None
+        else ()
+    )
+    abstract = _section(model, "abstract").intro[0]
+    executive = _section(model, "executive-summary").intro
+    evaluation_card = next(
+        card for card in key_cards if card.title == evaluation_finding.title
+    )
+    deployment_card = next(
+        card for card in key_cards if card.title == deployment_finding.title
+    )
+
+    assert evaluation_finding.title in key_titles
+    assert deployment_finding.title in key_titles
+    assert sum(title.startswith("Ranking design finding") for title in key_titles) > 1
+    assert key_titles.count(evaluation_finding.title) == 1
+    assert evaluation_finding.title not in appendix_titles
+    assert deployment_finding.title not in appendix_titles
+    assert remaining_appendix.title in appendix_titles
+    assert low_quality_appendix.title not in key_titles
+    assert "NDCG@10 measures" in abstract
+    assert "ranking service is designed" in abstract
+    assert any("NDCG@10 measures" in paragraph for paragraph in executive)
+    assert any("ranking service is designed" in paragraph for paragraph in executive)
+    assert evaluation_card.evidence.source_labels[0].startswith(
+        "evaluation-methods.pdf"
+    )
+    assert evaluation_card.evidence.source_labels[0].endswith("excerpt 1")
+    assert deployment_card.evidence.source_labels[0].startswith(
+        "deployment-notes.pdf"
+    )
+    assert deployment_card.evidence.source_labels[0].endswith("excerpt 1")
+    assert report.model_dump(mode="python") == report_before
+    assert tuple(document.model_dump(mode="python") for document in documents) == documents_before
+    assert tuple(chunk.model_dump(mode="python") for chunk in chunks) == chunks_before
+
+
+def test_multi_document_composition_balances_sources_and_uses_collection_cover_metadata() -> None:
+    """Publication selection covers distinct useful sources without imposing quotas."""
+    source_ids = _CHUNK_IDS[:3]
+    documents = tuple(
+        ParsedDocument(
+            filename=filename, file_type="pdf", extracted_text=f"{filename} evidence.",
+            page_count=pages, word_count=2, character_count=len(f"{filename} evidence."), metadata={},
+        )
+        for filename, pages in (("alpha.pdf", 2), ("beta.pdf", 3), ("gamma.pdf", 4))
+    )
+    chunks = tuple(
+        DocumentChunk(
+            chunk_id=chunk_id, document_filename=document.filename, chunk_index=0,
+            text=document.extracted_text, start_char=0, end_char=len(document.extracted_text),
+            word_count=document.word_count, character_count=document.character_count,
+        )
+        for document, chunk_id in zip(documents, source_ids, strict=True)
+    )
+    alpha_findings = tuple(
+        Finding(
+            title=f"Alpha architecture finding {index}",
+            description=f"Alpha architecture detail {index} is source-backed.",
+            supporting_chunk_ids=(source_ids[0],),
+        )
+        for index in range(8)
+    )
+    beta = Finding(
+        title="Beta evaluation finding",
+        description="Beta evaluation records a measurable ranking result.",
+        supporting_chunk_ids=(source_ids[1],),
+    )
+    gamma = Finding(
+        title="Gamma readiness finding",
+        description="Gamma readiness documents deterministic validation gates.",
+        supporting_chunk_ids=(source_ids[2],),
+    )
+    cross_supported = Finding(
+        title="Cross-supported finding",
+        description="The supplied evidence retains independent cross-source support.",
+        supporting_chunk_ids=(source_ids[1], source_ids[2]),
+    )
+    report = EnhancedResearchReport(
+        base_report=ResearchReport(title="Research Report", executive_summary="Canonical summary."),
+        executive_summary="A source summary that should not decide combined coverage.",
+        findings=alpha_findings + (beta, gamma, cross_supported),
+        synthesis_metadata=SynthesisMetadata(
+            provider="groq", model="test-model", elapsed_ms=0.0, successful=True,
+            source_evidence=(
+                SynthesisSourceEvidence(chunk_id=source_ids[0], confidence=0.99),
+                SynthesisSourceEvidence(chunk_id=source_ids[1], confidence=0.60),
+                SynthesisSourceEvidence(chunk_id=source_ids[2], confidence=0.50),
+            ),
+        ),
+    )
+
+    model = ReportComposer().compose(
+        report, source_documents=documents, source_chunks=chunks
+    )
+    key_titles = tuple(card.title for card in _finding_cards(_section(model, "key-insights")))
+    abstract = _section(model, "abstract").intro[0]
+    executive = _section(model, "executive-summary").intro
+    cross_card = next(
+        card
+        for section in model.sections
+        for group in section.finding_groups
+        for card in group.findings
+        if card.title == cross_supported.title
+    )
+
+    assert "Beta evaluation finding" in key_titles
+    assert "Gamma readiness finding" in key_titles
+    assert sum(title.startswith("Alpha architecture") for title in key_titles) > 1
+    assert "Beta evaluation" in abstract and "Gamma readiness" in abstract
+    assert any("Beta evaluation" in paragraph for paragraph in executive)
+    assert any("Gamma readiness" in paragraph for paragraph in executive)
+    assert model.cover.title == "Multi-Document Research Report"
+    assert model.cover.filename == "3 source documents"
+    assert model.cover.file_type == "PDF collection"
+    assert model.cover.page_count == 9
+    assert cross_card.evidence.source_count == 2
+    assert cross_card.evidence.source_labels == (
+        "beta.pdf · excerpt 1", "gamma.pdf · excerpt 1"
+    )

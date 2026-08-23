@@ -19,7 +19,11 @@ from starlette.concurrency import run_in_threadpool
 from app.models.parsed_document import ParsedDocument
 from app.reports import HTMLRenderer, MarkdownRenderer, PDFRenderer, PresentationModel
 from app.reports.exceptions import ReportRenderingError
-from app.services.pipeline_service import PipelineArtifacts, PipelineService
+from app.services.pipeline_service import (
+    MultiDocumentPipelineArtifacts,
+    PipelineArtifacts,
+    PipelineService,
+)
 from app.services.upload_service import (
     UnsupportedFileTypeError,
     UploadService,
@@ -62,6 +66,16 @@ class GeneratedReport:
     report_id: UUID
     available_formats: tuple[StoredFormat, ...]
     source_document: ParsedDocument
+    generation_metadata: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedMultiReport:
+    """Storage-safe summary of one completed multi-source request."""
+
+    report_id: UUID
+    available_formats: tuple[StoredFormat, ...]
+    source_documents: tuple[ParsedDocument, ...]
     generation_metadata: dict[str, object]
 
 
@@ -166,6 +180,28 @@ class LocalReportStore:
             raise ReportStorageError("Unable to finalize the uploaded PDF.") from exc
         return destination
 
+    def finalize_uploaded_sources(
+        self,
+        report_id: UUID,
+        temporary_paths: tuple[Path, ...],
+        filenames: tuple[str, ...],
+    ) -> tuple[Path, ...]:
+        """Move staged uploads into ordered multi-source storage safely."""
+        if len(temporary_paths) != len(filenames):
+            raise ReportStorageError("Uploaded source metadata is inconsistent.")
+        sources = self.report_directory(report_id) / "sources"
+        try:
+            sources.mkdir(exist_ok=False)
+            destinations = tuple(
+                sources / f"{index:03d}_{filename}"
+                for index, filename in enumerate(filenames, start=1)
+            )
+            for source, destination in zip(temporary_paths, destinations, strict=True):
+                Path(source).replace(destination)
+        except OSError as exc:
+            raise ReportStorageError("Unable to finalize uploaded source PDFs.") from exc
+        return destinations
+
     def _completed_artifact_path(self, report_id: UUID, artifact_name: str) -> Path:
         path = self.artifact_path(report_id, artifact_name)
         if not self.has_completed_report(report_id):
@@ -252,6 +288,40 @@ class PaperForgeService:
             report_id=report_id,
         )
 
+    async def create_multi_report(
+        self,
+        uploaded_files: list[UploadFile],
+    ) -> GeneratedMultiReport:
+        """Stage 2–5 PDFs, then run one ordered combined pipeline in a worker."""
+        if not 2 <= len(uploaded_files) <= 5:
+            raise InvalidReportUploadError("Provide between 2 and 5 PDF files.")
+        filenames = tuple(self._validate_pdf_upload(file) for file in uploaded_files)
+        if len({name.casefold() for name in filenames}) != len(filenames):
+            raise InvalidReportUploadError("Uploaded PDF filenames must be unique.")
+        report_id = uuid4()
+        try:
+            upload_response = await self._upload_service.save_files(uploaded_files, report_id)
+        except UnsupportedFileTypeError as exc:
+            raise InvalidReportUploadError("Only PDF uploads are accepted.") from exc
+        except (UploadTooLargeError, UploadValidationError) as exc:
+            raise InvalidReportUploadError(str(exc)) from exc
+        except UploadStorageError as exc:
+            raise ReportStorageError("Unable to persist uploaded PDFs.") from exc
+        temporary_paths = tuple(
+            self._store.report_directory(report_id) / f"{index:03d}_{file.filename}"
+            for index, file in enumerate(upload_response.files, start=1)
+        )
+        source_paths = self._store.finalize_uploaded_sources(
+            report_id, temporary_paths, filenames
+        )
+        return await run_in_threadpool(
+            self.generate_multi_report,
+            source_paths,
+            filenames,
+            "all",
+            report_id=report_id,
+        )
+
     def generate_report(
         self,
         uploaded_file: Path,
@@ -294,6 +364,26 @@ class PaperForgeService:
             generation_metadata=self._generation_metadata(artifacts),
         )
 
+    def generate_multi_report(
+        self,
+        source_paths: tuple[Path, ...],
+        source_filenames: tuple[str, ...],
+        output_format: ReportFormat = "all",
+        *,
+        report_id: UUID,
+    ) -> GeneratedMultiReport:
+        """Run one combined pipeline over already-persisted ordered PDFs."""
+        if output_format not in {"all", "json", "html", "markdown", "pdf"}:
+            raise InvalidReportUploadError("Requested output format is not supported.")
+        artifacts = self._pipeline_service.process_many(source_paths, source_filenames)
+        formats = self._materialize_artifacts(report_id, artifacts, output_format)
+        return GeneratedMultiReport(
+            report_id=report_id,
+            available_formats=formats,
+            source_documents=artifacts.source_documents,
+            generation_metadata=self._generation_metadata(artifacts),
+        )
+
     def presentation(self, report_id: UUID) -> PresentationModel:
         """Load the immutable presentation JSON that backs report retrieval."""
         try:
@@ -325,7 +415,7 @@ class PaperForgeService:
     def _materialize_artifacts(
         self,
         report_id: UUID,
-        artifacts: PipelineArtifacts,
+        artifacts: PipelineArtifacts | MultiDocumentPipelineArtifacts,
         output_format: ReportFormat,
     ) -> tuple[StoredFormat, ...]:
         """Persist requested immutable outputs with no renderer recomposition."""
@@ -378,16 +468,22 @@ class PaperForgeService:
         return ("json", output_format)
 
     @staticmethod
-    def _validate_pdf_upload(uploaded_file: UploadFile) -> None:
+    def _validate_pdf_upload(uploaded_file: UploadFile) -> str:
         """Reject absent or non-PDF multipart filenames before file I/O begins."""
         filename = uploaded_file.filename
         if not isinstance(filename, str) or not filename.strip():
             raise InvalidReportUploadError("A PDF file is required.")
-        if Path(filename.replace("\\", "/")).suffix.lower() != ".pdf":
+        safe_filename = Path(filename.replace("\\", "/")).name
+        if safe_filename in {"", ".", ".."} or "\x00" in safe_filename:
+            raise InvalidReportUploadError("A PDF file is required.")
+        if Path(safe_filename).suffix.lower() != ".pdf":
             raise InvalidReportUploadError("Only PDF uploads are accepted.")
+        return safe_filename
 
     @staticmethod
-    def _generation_metadata(artifacts: PipelineArtifacts) -> dict[str, object]:
+    def _generation_metadata(
+        artifacts: PipelineArtifacts | MultiDocumentPipelineArtifacts,
+    ) -> dict[str, object]:
         """Select safe synthesis telemetry without report text or source payloads."""
         metadata = artifacts.enhanced_report.synthesis_metadata
         return {
@@ -405,21 +501,31 @@ class PaperForgeService:
     def _metadata_payload(
         cls,
         report_id: UUID,
-        artifacts: PipelineArtifacts,
+        artifacts: PipelineArtifacts | MultiDocumentPipelineArtifacts,
         formats: tuple[StoredFormat, ...],
     ) -> dict[str, object]:
         """Build the safe metadata endpoint payload without report body text."""
-        document = artifacts.source_document
-        return {
+        payload: dict[str, object] = {
             "report_id": str(report_id),
             "status": "completed",
             "available_formats": list(formats),
-            "document": {
-                "filename": document.filename,
-                "file_type": document.file_type,
-                "page_count": document.page_count,
-                "word_count": document.word_count,
-                "character_count": document.character_count,
-            },
             "generation": cls._generation_metadata(artifacts),
+        }
+        if isinstance(artifacts, MultiDocumentPipelineArtifacts):
+            payload["documents"] = [
+                cls._document_metadata(document)
+                for document in artifacts.source_documents
+            ]
+        else:
+            payload["document"] = cls._document_metadata(artifacts.source_document)
+        return payload
+
+    @staticmethod
+    def _document_metadata(document: ParsedDocument) -> dict[str, object]:
+        return {
+            "filename": document.filename,
+            "file_type": document.file_type,
+            "page_count": document.page_count,
+            "word_count": document.word_count,
+            "character_count": document.character_count,
         }

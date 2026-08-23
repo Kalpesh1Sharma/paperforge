@@ -2,6 +2,7 @@
 
 from uuid import UUID
 
+from app.models.document_chunk import DocumentChunk
 from app.reports import (
     EnhancedResearchReport,
     Finding,
@@ -179,3 +180,28 @@ def test_markdown_cites_each_claim_with_source_evidence_order() -> None:
     assert "2. First source [Source 2]" in markdown
     assert str(_FIRST) not in markdown
     assert str(_SECOND) not in markdown
+
+
+def test_citations_use_per_document_excerpt_numbers_for_combined_evidence() -> None:
+    """Cross-document provenance retains raw-ID order and each source's chunk index."""
+    report = EnhancedResearchReport(
+        base_report=_base_report(), executive_summary="Enhanced summary.",
+        findings=(Finding(title="Finding", description="Supported fact.", supporting_chunk_ids=(_SECOND, _FIRST)),),
+        synthesis_metadata=SynthesisMetadata(
+            provider="groq", model="test-model", elapsed_ms=0.0, successful=True,
+            source_evidence=(
+                SynthesisSourceEvidence(chunk_id=_FIRST, confidence=0.8),
+                SynthesisSourceEvidence(chunk_id=_SECOND, confidence=0.8),
+            ),
+        ),
+    )
+    chunks = (
+        DocumentChunk(chunk_id=_FIRST, document_filename="alpha.pdf", chunk_index=1, text="Alpha source text.", start_char=0, end_char=18, word_count=3, character_count=18),
+        DocumentChunk(chunk_id=_SECOND, document_filename="beta.pdf", chunk_index=0, text="Beta source text.", start_char=0, end_char=17, word_count=3, character_count=17),
+    )
+
+    index = CitationIndex.from_report(report, source_chunks=chunks)
+
+    assert index.labels_for((_SECOND, _FIRST)) == (
+        "beta.pdf · excerpt 1", "alpha.pdf · excerpt 2"
+    )

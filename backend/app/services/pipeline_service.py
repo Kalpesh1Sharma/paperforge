@@ -65,6 +65,18 @@ class PipelineArtifacts:
     presentation: PresentationModel
 
 
+@dataclass(frozen=True, slots=True)
+class MultiDocumentPipelineArtifacts:
+    """Immutable values produced by one combined structured-evidence run."""
+
+    source_documents: tuple[ParsedDocument, ...]
+    chunks: tuple[DocumentChunk, ...]
+    knowledge_objects: tuple[KnowledgeObject, ...]
+    research_report: ResearchReport
+    enhanced_report: EnhancedResearchReport
+    presentation: PresentationModel
+
+
 class PipelineService:
     """Run established PaperForge components in their canonical order.
 
@@ -158,4 +170,58 @@ class PipelineService:
             research_report=research_report,
             enhanced_report=intelligent_report,
             presentation=presentation,
+        )
+
+    def process_many(
+        self,
+        input_paths: tuple[Path, ...],
+        source_filenames: tuple[str, ...],
+    ) -> MultiDocumentPipelineArtifacts:
+        """Process ordered PDFs independently before one combined synthesis."""
+        if len(input_paths) < 2 or len(input_paths) != len(source_filenames):
+            raise InvalidDocumentError("At least two valid source PDFs are required.")
+        try:
+            source_documents: list[ParsedDocument] = []
+            chunks: list[DocumentChunk] = []
+            for path, filename in zip(input_paths, source_filenames, strict=True):
+                logger.info("Pipeline stage=parse | filename=%s", filename)
+                parsed = ParserFactory.parse(Path(path)).model_copy(
+                    update={"filename": filename}
+                )
+                source_documents.append(parsed)
+                logger.info("Pipeline stage=chunk | filename=%s", filename)
+                chunks.extend(self._chunker.chunk(parsed))
+            chunk_tuple = tuple(chunks)
+            logger.info("Pipeline stage=knowledge | sources=%d", len(source_documents))
+            knowledge_tuple = tuple(
+                KnowledgePipeline(self._knowledge_extractor).process(list(chunk_tuple))
+            )
+            research_report = self._research_synthesizer.synthesize(knowledge_tuple)
+            enhanced_report = self._document_synthesizer.synthesize(
+                research_report, knowledge_tuple
+            )
+            intelligent_report = self._intelligence_builder.build(
+                enhanced_report, knowledge_tuple
+            )
+            presentation = self._composer.compose(
+                intelligent_report,
+                source_documents=tuple(source_documents),
+                source_chunks=chunk_tuple,
+            )
+        except DocumentParsingError as exc:
+            raise InvalidDocumentError("The uploaded file is not a valid PDF.") from exc
+        except ChunkingError as exc:
+            raise InvalidDocumentError("The uploaded PDF does not contain usable document text.") from exc
+        except GroqRateLimitError as exc:
+            raise ProviderRateLimitedError("The knowledge provider is currently rate limited.") from exc
+        except GroqTemporaryServiceError as exc:
+            raise TemporaryProviderUnavailableError("The knowledge provider is temporarily unavailable.") from exc
+        except KnowledgeError as exc:
+            raise TemporaryProviderUnavailableError("Knowledge extraction could not complete.") from exc
+        except ReportError as exc:
+            raise TemporaryProviderUnavailableError("Report generation could not complete.") from exc
+        return MultiDocumentPipelineArtifacts(
+            source_documents=tuple(source_documents), chunks=chunk_tuple,
+            knowledge_objects=knowledge_tuple, research_report=research_report,
+            enhanced_report=intelligent_report, presentation=presentation,
         )

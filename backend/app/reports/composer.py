@@ -433,16 +433,31 @@ class ReportComposer:
         report: EnhancedResearchReport,
         source_document: ParsedDocument | None = None,
         generated_on: date | None = None,
+        *,
+        source_documents: tuple[ParsedDocument, ...] = (),
+        source_chunks: tuple[DocumentChunk, ...] = (),
     ) -> PresentationModel:
         """Return one deterministic presentation model for an enhanced report."""
         self._validate_report(report)
         self._validate_source_document(source_document)
+        for document in source_documents:
+            self._validate_source_document(document)
         self._validate_generated_on(generated_on)
+        if source_document is not None and source_documents:
+            raise InvalidResearchReportError("Source context must not be duplicated.")
+        active_documents = source_documents or (
+            (source_document,) if source_document is not None else ()
+        )
+        multi_document = len(active_documents) > 1
+        chunk_documents = {
+            chunk.chunk_id: chunk.document_filename for chunk in source_chunks
+        }
 
         try:
             context = EnhancedReportRenderContext.from_report(
                 report,
                 source_document.filename if source_document is not None else None,
+                source_chunks,
             )
             confidence_by_source = self._confidence_by_source(report)
             primary_candidates = self._primary_finding_candidates(
@@ -482,6 +497,14 @@ class ReportComposer:
                     self._budget.executive_summary_paragraph_limit
                 ),
             )
+            if multi_document and self._mode in {
+                ReportMode.PROFESSIONAL,
+                ReportMode.EXECUTIVE,
+            }:
+                # The provider summary may emphasize one source. Keep all
+                # curated candidates eligible, then build the visible summary
+                # from the balanced selected pool below.
+                executive_summary = ()
             summary_covered, finding_pool = self._remove_summary_duplicates(
                 curated_findings.cards,
                 executive_summary,
@@ -499,18 +522,51 @@ class ReportComposer:
                 for candidate in finding_pool
                 if not candidate.is_canonical and not candidate.is_appendix
             )
-            ranked_findings = tuple(
-                sorted(primary_finding_pool, key=lambda candidate: candidate.sort_key)
+            multi_document_publication = multi_document and self._mode in {
+                ReportMode.PROFESSIONAL,
+                ReportMode.EXECUTIVE,
+            }
+            key_finding_pool = (
+                primary_finding_pool + appendix_finding_pool
+                if multi_document_publication
+                else primary_finding_pool
             )
-            selected_candidates, non_key_candidates = self._take(
+            ranked_findings = tuple(
+                sorted(key_finding_pool, key=lambda candidate: candidate.sort_key)
+            )
+            selected_candidates, non_key_candidates = self._select_primary_candidates(
                 ranked_findings,
                 self._budget.key_insights_limit,
+                chunk_documents,
+                enable_source_diversity=(
+                    multi_document_publication
+                ),
             )
+            if multi_document and self._mode in {
+                ReportMode.PROFESSIONAL,
+                ReportMode.EXECUTIVE,
+            }:
+                executive_summary = self._multi_document_executive_summary(
+                    tuple(candidate.card for candidate in selected_candidates),
+                    chunk_documents,
+                    self._content_summary_limit(
+                        self._budget.executive_summary_paragraph_limit
+                    ),
+                ) or executive_summary
 
+            technical_pool = (
+                tuple(
+                    candidate
+                    for candidate in non_key_candidates
+                    if not candidate.is_appendix
+                )
+                if multi_document_publication
+                else non_key_candidates
+            )
             technical_candidates, technical_remainder = self._take(
                 tuple(
                     sorted(
-                        non_key_candidates + supported_finding_pool,
+                        technical_pool + supported_finding_pool,
                         key=lambda candidate: candidate.sort_key,
                     )
                 ),
@@ -524,7 +580,16 @@ class ReportComposer:
             appendix_candidates_visible, hidden_canonical_candidates = self._take(
                 tuple(
                     sorted(
-                        appendix_finding_pool + canonical_remainder,
+                        (
+                            tuple(
+                                candidate
+                                for candidate in non_key_candidates
+                                if candidate.is_appendix
+                            )
+                            if multi_document_publication
+                            else appendix_finding_pool
+                        )
+                        + canonical_remainder,
                         key=lambda candidate: candidate.sort_key,
                     )
                 ),
@@ -715,11 +780,12 @@ class ReportComposer:
             )
             cover = self._cover(
                 report,
-                source_document,
+                active_documents[0] if len(active_documents) == 1 else None,
                 generated_on,
                 confidence_by_source,
                 self._cited_source_ids(report),
                 domain,
+                source_documents=active_documents,
             )
             sections = self._sections(
                 report,
@@ -972,6 +1038,89 @@ class ReportComposer:
         if limit is None:
             return values, ()
         return values[:limit], values[limit:]
+
+    @classmethod
+    def _select_primary_candidates(
+        cls,
+        ranked: tuple[_FindingCandidate, ...],
+        limit: int | None,
+        chunk_documents: dict[UUID, str],
+        *,
+        enable_source_diversity: bool,
+    ) -> tuple[tuple[_FindingCandidate, ...], tuple[_FindingCandidate, ...]]:
+        """Select ranked findings while retaining distinct useful source voices."""
+        if not enable_source_diversity or limit is None:
+            return cls._take(ranked, limit)
+        selected_indexes: set[int] = set()
+        covered_documents: set[str] = set()
+        for index, candidate in enumerate(ranked):
+            documents = cls._candidate_documents(candidate, chunk_documents)
+            if documents and not set(documents).intersection(covered_documents):
+                selected_indexes.add(index)
+                covered_documents.update(documents)
+                if len(selected_indexes) == limit:
+                    break
+        for index in range(len(ranked)):
+            if len(selected_indexes) == limit:
+                break
+            selected_indexes.add(index)
+        selected = tuple(
+            candidate for index, candidate in enumerate(ranked) if index in selected_indexes
+        )
+        remainder = tuple(
+            candidate for index, candidate in enumerate(ranked) if index not in selected_indexes
+        )
+        return selected, remainder
+
+    @staticmethod
+    def _candidate_documents(
+        candidate: _FindingCandidate,
+        chunk_documents: dict[UUID, str],
+    ) -> tuple[str, ...]:
+        """Return source filenames in the finding's authoritative UUID order."""
+        return tuple(
+            dict.fromkeys(
+                chunk_documents[source_id]
+                for source_id in candidate.card.evidence.supporting_chunk_ids
+                if source_id in chunk_documents
+            )
+        )
+
+    @classmethod
+    def _multi_document_executive_summary(
+        cls,
+        cards: tuple[InsightCard, ...],
+        chunk_documents: dict[UUID, str],
+        paragraph_limit: int | None,
+    ) -> tuple[str, ...]:
+        """Extract one grounded contribution per represented source document."""
+        paragraphs: list[str] = []
+        represented: set[str] = set()
+        for card in cards:
+            documents = tuple(
+                dict.fromkeys(
+                    chunk_documents[source_id]
+                    for source_id in card.evidence.supporting_chunk_ids
+                    if source_id in chunk_documents
+                )
+            )
+            if not documents or set(documents).intersection(represented):
+                continue
+            sentence = next(
+                (
+                    value
+                    for value in cls._sentences(card.summary)
+                    if cls._is_editorially_useful_sentence(value)
+                ),
+                None,
+            )
+            if sentence is None:
+                continue
+            paragraphs.append(sentence)
+            represented.update(documents)
+            if paragraph_limit is not None and len(paragraphs) == paragraph_limit:
+                break
+        return tuple(paragraphs)
 
     def _editorially_suppress_findings(
         self,
@@ -2403,13 +2552,23 @@ class ReportComposer:
         confidence_by_source: dict[UUID, float],
         cited_source_ids: tuple[UUID, ...],
         domain: str,
+        *,
+        source_documents: tuple[ParsedDocument, ...] = (),
     ) -> DocumentMetadata:
         """Build deterministic cover information without reading wall-clock time."""
         source_title = None
         filename = None
         file_type = None
         page_count = None
-        if source_document is not None:
+        if len(source_documents) > 1:
+            filename = f"{len(source_documents)} source documents"
+            file_type = "PDF collection"
+            page_count = (
+                sum(document.page_count for document in source_documents)
+                if all(document.page_count is not None for document in source_documents)
+                else None
+            )
+        elif source_document is not None:
             possible_title = source_document.metadata.get("title")
             if isinstance(possible_title, str) and possible_title.strip():
                 source_title = possible_title.strip()
@@ -2426,6 +2585,7 @@ class ReportComposer:
                 source_title,
                 report.base_report.title,
                 cls._extracted_document_heading(source_document),
+                multi_document=len(source_documents) > 1,
             ),
             filename=filename,
             file_type=file_type,
@@ -2446,12 +2606,14 @@ class ReportComposer:
         source_title: str | None,
         report_title: str,
         extracted_heading: str | None = None,
+        *,
+        multi_document: bool = False,
     ) -> str:
         """Choose a conservative publication title without promoting filenames."""
         for candidate in (source_title, report_title, extracted_heading):
             if cls._is_meaningful_publication_title(candidate):
                 return candidate.strip()
-        return "Research Report"
+        return "Multi-Document Research Report" if multi_document else "Research Report"
 
     @classmethod
     def _extracted_document_heading(

@@ -3,7 +3,7 @@
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ApiError(BaseModel):
@@ -73,6 +73,17 @@ class ReportCreatedResponse(BaseModel):
     metadata: ReportDocumentMetadata
 
 
+class MultiReportCreatedResponse(BaseModel):
+    """Response emitted once a multi-source report has all local artifacts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    report_id: UUID
+    status: Literal["completed"] = "completed"
+    available_formats: tuple[Literal["json", "html", "markdown", "pdf"], ...]
+    documents: tuple[ReportDocumentMetadata, ...] = Field(min_length=2, max_length=5)
+
+
 class ReportMetadataResponse(BaseModel):
     """Metadata endpoint contract, deliberately excluding report content."""
 
@@ -81,5 +92,12 @@ class ReportMetadataResponse(BaseModel):
     report_id: UUID
     status: Literal["completed"] = "completed"
     available_formats: tuple[Literal["json", "html", "markdown", "pdf"], ...]
-    document: ReportDocumentMetadata
+    document: ReportDocumentMetadata | None = None
+    documents: tuple[ReportDocumentMetadata, ...] | None = None
     generation: ReportGenerationMetadata
+
+    @model_validator(mode="after")
+    def validate_source_shape(self) -> "ReportMetadataResponse":
+        if (self.document is None) == (self.documents is None):
+            raise ValueError("Metadata must contain exactly one source shape.")
+        return self

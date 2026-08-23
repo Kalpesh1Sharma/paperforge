@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from uuid import UUID
 
+from app.models.document_chunk import DocumentChunk
 from app.reports.enhanced_models import EnhancedResearchReport
 
 
@@ -31,6 +32,7 @@ class CitationIndex:
         cls,
         report: EnhancedResearchReport,
         source_filename: str | None = None,
+        source_chunks: tuple[DocumentChunk, ...] = (),
     ) -> "CitationIndex":
         """Build labels from evidence order, using source context when available."""
         labels: dict[UUID, str] = {}
@@ -41,17 +43,24 @@ class CitationIndex:
             if isinstance(source_filename, str) and source_filename.strip()
             else None
         )
+        chunk_labels = {
+            chunk.chunk_id: f"{chunk.document_filename} · excerpt {chunk.chunk_index + 1}"
+            for chunk in source_chunks
+        }
 
         for evidence in report.synthesis_metadata.source_evidence:
             if evidence.chunk_id in labels:
                 continue
-            label = cls._next_label(labels, label_prefix)
+            label = chunk_labels.get(
+                evidence.chunk_id,
+                cls._next_label(labels, label_prefix),
+            )
             labels[evidence.chunk_id] = label
             sources.append(CitationSource(label, evidence.references))
 
         for chunk_id in cls._referenced_chunk_ids(report):
             if chunk_id not in labels:
-                label = cls._next_label(labels, label_prefix)
+                label = chunk_labels.get(chunk_id, cls._next_label(labels, label_prefix))
                 labels[chunk_id] = label
                 sources.append(CitationSource(label, ()))
 

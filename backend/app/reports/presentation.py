@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from app.models.document_chunk import DocumentChunk
 from app.reports.citations import CitationIndex
 from app.reports.enhanced_models import EnhancedResearchReport
 from app.reports.exceptions import InvalidResearchReportError
@@ -293,9 +294,14 @@ class EnhancedReportRenderContext:
         cls,
         report: EnhancedResearchReport,
         source_filename: str | None = None,
+        source_chunks: tuple[DocumentChunk, ...] = (),
     ) -> "EnhancedReportRenderContext":
         """Build one stable context, using deterministic fields as a fallback."""
-        citation_index = CitationIndex.from_report(report, source_filename)
+        citation_index = CitationIndex.from_report(
+            report,
+            source_filename,
+            source_chunks,
+        )
         intelligence = report.report_intelligence
         finding_overrides = cls._finding_overrides(intelligence)
         visible_intelligent_entities = cls._visible_intelligent_entities(report)
