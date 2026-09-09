@@ -178,7 +178,12 @@ class MarkdownRenderer:
                 f"*PaperForge Research Report - {_PUBLICATION_VERSION}*",
                 "",
                 f"Prepared from document: **{prepared_from}**  ",
-                "Prepared by PaperForge",
+                f"Prepared by {cover.author or 'PaperForge'}",
+                *(
+                    (f"Organisation: {cover.organisation}",)
+                    if cover.organisation is not None
+                    else ()
+                ),
                 "",
                 "| Publication detail | Value |",
                 "| --- | --- |",

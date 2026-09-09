@@ -6,18 +6,26 @@ from app.schemas.responses import (
     HealthResponse,
     MultiReportCreatedResponse,
     ReportCreatedResponse,
+    ReportJobResponse,
     ReportMetadataResponse,
     ReviewStateResponse,
 )
-from app.schemas.requests import ReviewDecisionRequest
+from app.schemas.requests import (
+    CreateProjectRequest,
+    RenameProjectRequest,
+    ReviewDecisionRequest,
+)
 
 __all__ = [
     "ApiError",
     "ApiErrorResponse",
     "HealthResponse",
+    "CreateProjectRequest",
     "MultiReportCreatedResponse",
     "ReportCreatedResponse",
+    "ReportJobResponse",
     "ReportMetadataResponse",
+    "RenameProjectRequest",
     "ReviewDecisionRequest",
     "ReviewStateResponse",
 ]

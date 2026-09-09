@@ -1,6 +1,7 @@
 """Offline orchestration tests for the ordered multi-document pipeline."""
 
 from pathlib import Path
+from datetime import date
 from uuid import UUID
 
 from app.knowledge import KnowledgeObject
@@ -89,6 +90,7 @@ def test_process_many_parses_and_chunks_each_source_before_one_combined_run(monk
             assert received is enhanced
             assert tuple(document.filename for document in kwargs["source_documents"]) == ("alpha.pdf", "beta.pdf")
             assert tuple(chunk.document_filename for chunk in kwargs["source_chunks"]) == ("alpha.pdf", "beta.pdf")
+            assert isinstance(kwargs["generated_on"], date)
             return object()
 
     monkeypatch.setattr(ParserFactory, "parse", staticmethod(parse))

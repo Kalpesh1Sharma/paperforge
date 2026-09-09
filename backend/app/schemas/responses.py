@@ -1,10 +1,10 @@
 """Stable OpenAPI response contracts for the PaperForge HTTP API."""
 
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-
 
 class ApiError(BaseModel):
     """One sanitized API error suitable for clients and logs."""
@@ -62,6 +62,23 @@ class ReportGenerationMetadata(BaseModel):
     reason: str | None = None
 
 
+class ReportWizardSettingsMetadata(BaseModel):
+    """Safe persisted wizard selections returned with report metadata."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_title: str
+    research_domain: str
+    purpose: str | None = None
+    structure: Literal["professional", "executive", "technical", "full"]
+    visual_template: Literal[
+        "paperforge-classic", "modern-research", "editorial", "minimal"
+    ]
+    report_title: str
+    author: str
+    organisation: str | None = None
+
+
 class ReportCreatedResponse(BaseModel):
     """Response emitted once all requested local report artifacts exist."""
 
@@ -95,12 +112,54 @@ class ReportMetadataResponse(BaseModel):
     document: ReportDocumentMetadata | None = None
     documents: tuple[ReportDocumentMetadata, ...] | None = None
     generation: ReportGenerationMetadata
+    settings: ReportWizardSettingsMetadata | None = None
 
     @model_validator(mode="after")
     def validate_source_shape(self) -> "ReportMetadataResponse":
         if (self.document is None) == (self.documents is None):
             raise ValueError("Metadata must contain exactly one source shape.")
         return self
+
+
+class ReportJobErrorResponse(BaseModel):
+    """Safe terminal error attached to a failed background job."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    message: str
+
+
+class ReportJobResponse(BaseModel):
+    """Persistent progress returned when creating or polling a report job."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: UUID
+    report_id: UUID
+    status: Literal["queued", "running", "completed", "failed"]
+    stage: Literal[
+        "queued",
+        "parsing",
+        "chunking",
+        "extracting",
+        "researching",
+        "synthesizing",
+        "reviewing",
+        "composing",
+        "rendering",
+        "completed",
+        "failed",
+    ]
+    progress: int = Field(ge=0, le=100)
+    message: str
+    source_filenames: tuple[str, ...] = Field(min_length=1, max_length=5)
+    provider: str | None = None
+    fallback: bool | None = None
+    error: ReportJobErrorResponse | None = None
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None = None
 
 
 class ReviewChangeResponse(BaseModel):

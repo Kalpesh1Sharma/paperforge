@@ -4,6 +4,8 @@ from fastapi import Depends
 
 from app.config import Settings, settings
 from app.integrations.superdocs import SuperDocsClient
+from app.jobs import ReportJobReader, ReportJobService, SQLiteReportJobStore
+from app.projects import ProjectService, SQLiteProjectStore
 from app.services.pipeline_service import PipelineService
 from app.services.report_service import LocalReportStore, PaperForgeService
 from app.services.review_service import ReviewService
@@ -32,6 +34,16 @@ def get_upload_service(
     )
 
 
+def get_project_service(
+    store: LocalReportStore = Depends(get_report_store),
+) -> ProjectService:
+    """Provide durable local project state beside the report artifact store."""
+    return ProjectService(
+        SQLiteProjectStore(store.root_dir / "paperforge.db"),
+        store.root_dir,
+    )
+
+
 def get_pipeline_service() -> PipelineService:
     """Provide the stateless, synchronous domain-pipeline adapter."""
     return PipelineService()
@@ -41,13 +53,37 @@ def get_paperforge_service(
     store: LocalReportStore = Depends(get_report_store),
     pipeline_service: PipelineService = Depends(get_pipeline_service),
     upload_service: UploadService = Depends(get_upload_service),
+    project_service: ProjectService = Depends(get_project_service),
 ) -> PaperForgeService:
     """Provide a high-level service without constructing collaborators in routes."""
     return PaperForgeService(
         store=store,
         pipeline_service=pipeline_service,
         upload_service=upload_service,
+        project_service=project_service,
     )
+
+
+def get_report_job_store(
+    store: LocalReportStore = Depends(get_report_store),
+) -> SQLiteReportJobStore:
+    """Provide the shared durable job store without initializing AI providers."""
+    return SQLiteReportJobStore(store.root_dir / "paperforge.db")
+
+
+def get_report_job_reader(
+    job_store: SQLiteReportJobStore = Depends(get_report_job_store),
+) -> ReportJobReader:
+    """Provide lightweight job polling for the processing UI."""
+    return ReportJobReader(job_store)
+
+
+def get_report_job_service(
+    report_service: PaperForgeService = Depends(get_paperforge_service),
+    job_store: SQLiteReportJobStore = Depends(get_report_job_store),
+) -> ReportJobService:
+    """Provide report-job mutation and execution orchestration."""
+    return ReportJobService(job_store, report_service)
 
 
 def get_superdocs_client(

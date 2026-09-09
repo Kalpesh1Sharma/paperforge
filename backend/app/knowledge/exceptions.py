@@ -17,6 +17,38 @@ class RecoverableProviderError(ProviderError):
     """Marker for provider failures safe to handle with local fallback."""
 
 
+class ProviderConfigurationError(ProviderError):
+    """Raised when the selected provider is incomplete or invalid."""
+
+
+class ProviderAuthenticationError(ProviderError):
+    """Raised when the selected provider rejects its credentials."""
+
+
+class ProviderRateLimitError(RecoverableProviderError):
+    """Raised when the selected provider exhausts retryable rate limits."""
+
+
+class ProviderTimeoutError(RecoverableProviderError):
+    """Raised when the selected provider exhausts timeout retries."""
+
+
+class ProviderNetworkError(RecoverableProviderError):
+    """Raised when the selected provider remains unreachable."""
+
+
+class ProviderTemporaryServiceError(RecoverableProviderError):
+    """Raised when the selected provider keeps returning server errors."""
+
+
+class ProviderMalformedResponseError(RecoverableProviderError):
+    """Raised when the selected provider returns unusable content."""
+
+
+class ProviderSchemaValidationError(RecoverableProviderError):
+    """Raised when provider JSON does not match the knowledge schema."""
+
+
 class InvalidKnowledgeObjectError(RecoverableProviderError):
     """Raised when a provider returns an invalid KnowledgeObject."""
 

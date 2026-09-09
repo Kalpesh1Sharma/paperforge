@@ -430,6 +430,38 @@ def test_pdf_renderer_delegates_composed_presentation_to_html_renderer(
     _assert_no_temporary_artifacts(output_path.parent)
 
 
+def test_pdf_renderer_uses_presentation_cover_for_document_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Downloaded PDFs retain the title, author, and domain selected in the wizard."""
+    presentation = ReportComposer().compose(_report())
+    presentation = presentation.model_copy(
+        update={
+            "cover": presentation.cover.model_copy(
+                update={
+                    "title": "Cloud AI Assessment",
+                    "author": "Kalpesh Sharma",
+                    "domain": "Cloud AI",
+                }
+            )
+        }
+    )
+    _install_html_renderer(monkeypatch)
+    _install_playwright(monkeypatch)
+
+    output_path = PDFRenderer().render_presentation(
+        presentation,
+        tmp_path / "publication.pdf",
+    )
+
+    with fitz.open(output_path) as document:
+        assert document.metadata["title"] == "Cloud AI Assessment"
+        assert document.metadata["author"] == "Kalpesh Sharma"
+        assert document.metadata["subject"] == "Cloud AI"
+        assert document.metadata["creator"] == "PaperForge"
+
+
 def test_pdf_renderer_preserves_anchor_bearing_presentation_html_through_adapter(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

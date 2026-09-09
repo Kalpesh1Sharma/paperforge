@@ -1,9 +1,32 @@
 export type DocumentMetadata = { filename: string; file_type: string; page_count: number | null; word_count: number; character_count: number };
 export type CreationResponse = { report_id: string; status: "completed"; available_formats: string[]; metadata?: DocumentMetadata; documents?: DocumentMetadata[] };
-export type ReportMetadata = { report_id: string; status: "completed"; available_formats: string[]; document?: DocumentMetadata; documents?: DocumentMetadata[]; generation: { provider: string; model: string | null; elapsed_ms: number; successful: boolean; fallback: boolean; enhanced: boolean; reason: string | null } };
+export type ReportJobStage = "queued" | "parsing" | "chunking" | "extracting" | "researching" | "synthesizing" | "reviewing" | "composing" | "rendering" | "completed" | "failed";
+export type ReportJob = { job_id: string; report_id: string; status: "queued" | "running" | "completed" | "failed"; stage: ReportJobStage; progress: number; message: string; source_filenames: string[]; provider: string | null; fallback: boolean | null; error: { code: string; message: string } | null; created_at: string; updated_at: string; completed_at: string | null };
+export type ReportMetadata = { report_id: string; status: "completed"; available_formats: string[]; document?: DocumentMetadata; documents?: DocumentMetadata[]; generation: { provider: string; model: string | null; elapsed_ms: number; successful: boolean; fallback: boolean; enhanced: boolean; reason: string | null }; settings?: WizardSettings | null };
+export type ReportSectionLink = { heading: string; anchor_id: string };
+export type ReportPresentation = {
+  cover: { title: string; domain: string; generated_on: string | null; status: string; author: string | null; organisation: string | null; provider: string | null; model: string | null; knowledge_object_count: number; evidence_source_count: number; mean_confidence: number | null };
+  template_key: VisualTemplate;
+  mode: ReportStructure;
+  table_of_contents: { entries: ReportSectionLink[] };
+  sections: Array<{ key: string; heading: string; anchor_id: string }>;
+};
 export type ChangeOperation = "edit" | "create" | "delete";
 export type ReviewChange = { change_id: string; operation: ChangeOperation; chunk_id: string | null; document_id: string | null; old_html: string | null; new_html: string | null; ai_explanation: string | null; insert_after_chunk_id: string | null; insert_before_chunk_id: string | null };
 export type ReviewStatus = "awaiting_approval" | "processing" | "completed" | "failed" | "cancelled" | "needs_attention";
 export type ReviewState = { report_id: string; status: ReviewStatus; pending_changes: ReviewChange[]; approved_changes: ReviewChange[]; rejected_changes: ReviewChange[]; final_docx_available: boolean };
 export type Health = { status: "healthy"; service: string; version: string; ready: true };
 export type ApiError = { code: string; message: string; request_id: string };
+export type ProjectApiRecord = { id: string; title: string; report_id: string | null; status: "draft" | "ready"; sources: DocumentMetadata[]; available_formats: string[]; created_at: string; updated_at: string };
+export type ReportStructure = "professional" | "executive" | "technical" | "full";
+export type VisualTemplate = "paperforge-classic" | "modern-research" | "editorial" | "minimal";
+export type WizardSettings = {
+  project_title: string;
+  research_domain: string;
+  purpose: string | null;
+  structure: ReportStructure;
+  visual_template: VisualTemplate;
+  report_title: string;
+  author: string;
+  organisation: string | null;
+};

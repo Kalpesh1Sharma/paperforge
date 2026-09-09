@@ -25,6 +25,17 @@ from pydantic import (
     field_validator,
 )
 
+from app.ai import CompatibleChatClient
+from app.ai.exceptions import (
+    CompatibleAIAuthenticationError,
+    CompatibleAIConfigurationError,
+    CompatibleAIMalformedResponseError,
+    CompatibleAINetworkError,
+    CompatibleAIRateLimitError,
+    CompatibleAIRequestError,
+    CompatibleAITemporaryServiceError,
+    CompatibleAITimeoutError,
+)
 from app.config import settings
 from app.knowledge.models import KnowledgeObject
 from app.reports.enhanced_models import (
@@ -134,6 +145,10 @@ class _DocumentSynthesisResponse(BaseModel):
 class DocumentSynthesizer:
     """Refine one deterministic report through a single Groq completion."""
 
+    def __init__(self, completion_client: CompatibleChatClient | None = None) -> None:
+        """Use legacy Groq SDK behavior or an injected compatible provider."""
+        self._completion_client = completion_client
+
     def synthesize(
         self,
         report: ResearchReport,
@@ -154,28 +169,33 @@ class DocumentSynthesizer:
         self._validate_knowledge_objects(knowledge_objects)
         self._validate_base_provenance(report, knowledge_objects)
         refinement_plan = ReportRefiner.build_plan(report, knowledge_objects)
-        api_key, model = self._configuration()
+        if self._completion_client is None:
+            api_key, model = self._configuration()
+            provider = "groq"
+        else:
+            api_key = None
+            model = self._completion_client.model
+            provider = self._completion_client.provider
         payload = self._request_payload(report, knowledge_objects, refinement_plan)
 
         try:
-            client = Groq(api_key=api_key, max_retries=0)
-            completion = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": DOCUMENT_SYNTHESIS_PROMPT,
-                    },
-                    {
-                        "role": "user",
-                        "content": payload,
-                    },
-                ],
-                temperature=0,
-                stream=False,
-                response_format={"type": "json_object"},
-            )
-            response = self._parse_response(self._completion_content(completion))
+            messages = [
+                {"role": "system", "content": DOCUMENT_SYNTHESIS_PROMPT},
+                {"role": "user", "content": payload},
+            ]
+            if self._completion_client is None:
+                client = Groq(api_key=api_key, max_retries=0)
+                completion = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0,
+                    stream=False,
+                    response_format={"type": "json_object"},
+                )
+                content = self._completion_content(completion)
+            else:
+                content = self._completion_client.complete(messages)
+            response = self._parse_response(content)
             self._validate_section_provenance(response, knowledge_objects)
             enhanced_report = self._enhanced_report(
                 report,
@@ -183,6 +203,7 @@ class DocumentSynthesizer:
                 response,
                 model,
                 started_at,
+                provider,
             )
         except _RecoverableSynthesisResponseError as exc:
             return self._fallback_report(
@@ -191,6 +212,7 @@ class DocumentSynthesizer:
                 started_at,
                 reason=exc.reason,
                 message=str(exc),
+                provider=provider,
             )
         except RateLimitError:
             return self._fallback_report(
@@ -200,6 +222,57 @@ class DocumentSynthesizer:
                 reason="rate_limit",
                 message="Groq document synthesis was rate limited.",
             )
+        except CompatibleAIRateLimitError:
+            return self._fallback_report(
+                report,
+                refinement_plan,
+                started_at,
+                reason="rate_limit",
+                message=f"{provider} document synthesis was rate limited.",
+                provider=provider,
+            )
+        except CompatibleAITimeoutError:
+            return self._fallback_report(
+                report,
+                refinement_plan,
+                started_at,
+                reason="timeout",
+                message=f"{provider} document synthesis timed out.",
+                provider=provider,
+            )
+        except CompatibleAINetworkError:
+            return self._fallback_report(
+                report,
+                refinement_plan,
+                started_at,
+                reason="connection",
+                message=f"{provider} document synthesis service was unreachable.",
+                provider=provider,
+            )
+        except CompatibleAITemporaryServiceError:
+            return self._fallback_report(
+                report,
+                refinement_plan,
+                started_at,
+                reason="api_status",
+                message=f"{provider} document synthesis service returned a server error.",
+                provider=provider,
+            )
+        except CompatibleAIMalformedResponseError:
+            return self._fallback_report(
+                report,
+                refinement_plan,
+                started_at,
+                reason="malformed_response",
+                message=f"{provider} document synthesis returned an invalid response.",
+                provider=provider,
+            )
+        except (CompatibleAIAuthenticationError, CompatibleAIConfigurationError) as exc:
+            self._log_failure(model, object_count, started_at, provider=provider)
+            raise ReportSynthesisError(str(exc)) from exc
+        except CompatibleAIRequestError as exc:
+            self._log_failure(model, object_count, started_at, provider=provider)
+            raise ReportSynthesisError(str(exc)) from exc
         except APITimeoutError:
             return self._fallback_report(
                 report,
@@ -268,7 +341,7 @@ class DocumentSynthesizer:
                 "Groq document synthesis request failed."
             ) from exc
 
-        self._log_success(model, object_count, started_at)
+        self._log_success(model, object_count, started_at, provider=provider)
         return enhanced_report
 
     @staticmethod
@@ -601,6 +674,7 @@ class DocumentSynthesizer:
         response: _DocumentSynthesisResponse,
         model: str,
         started_at: float,
+        provider: str = "groq",
     ) -> EnhancedResearchReport:
         """Build a new overlay while retaining canonical candidate membership."""
         rewrites = cls._candidate_rewrites(response)
@@ -630,7 +704,7 @@ class DocumentSynthesizer:
                     for section in response.sections
                 ),
                 synthesis_metadata=SynthesisMetadata(
-                    provider="groq",
+                    provider=provider,
                     model=model,
                     elapsed_ms=(perf_counter() - started_at) * 1000,
                     successful=True,
@@ -657,6 +731,7 @@ class DocumentSynthesizer:
         *,
         reason: str,
         message: str,
+        provider: str = "groq",
     ) -> EnhancedResearchReport:
         """Build and log one deterministic refined fallback after a safe failure."""
         fallback_report = DocumentSynthesizer._build_fallback_report(
@@ -665,7 +740,9 @@ class DocumentSynthesizer:
             started_at,
             reason,
         )
-        DocumentSynthesizer._log_fallback(reason, message, started_at)
+        DocumentSynthesizer._log_fallback(
+            reason, message, started_at, provider=provider
+        )
         return fallback_report
 
     @staticmethod
@@ -706,33 +783,56 @@ class DocumentSynthesizer:
         return fallback_report
 
     @staticmethod
-    def _log_success(model: str, object_count: int, started_at: float) -> None:
+    def _log_success(
+        model: str,
+        object_count: int,
+        started_at: float,
+        *,
+        provider: str = "groq",
+    ) -> None:
         """Log safe success telemetry without report or source text."""
         logger.info(
-            "Document synthesis completed | model=%s | knowledge_object_count=%d | "
+            "Document synthesis completed | provider=%s | model=%s | "
+            "knowledge_object_count=%d | "
             "elapsed_ms=%.2f | outcome=success",
+            provider,
             model,
             object_count,
             (perf_counter() - started_at) * 1000,
         )
 
     @staticmethod
-    def _log_failure(model: str, object_count: int, started_at: float) -> None:
+    def _log_failure(
+        model: str,
+        object_count: int,
+        started_at: float,
+        *,
+        provider: str = "groq",
+    ) -> None:
         """Log safe failure telemetry without report or source text."""
         logger.error(
-            "Document synthesis completed | model=%s | knowledge_object_count=%d | "
+            "Document synthesis completed | provider=%s | model=%s | "
+            "knowledge_object_count=%d | "
             "elapsed_ms=%.2f | outcome=failure",
+            provider,
             model,
             object_count,
             (perf_counter() - started_at) * 1000,
         )
 
     @staticmethod
-    def _log_fallback(reason: str, message: str, started_at: float) -> None:
+    def _log_fallback(
+        reason: str,
+        message: str,
+        started_at: float,
+        *,
+        provider: str = "groq",
+    ) -> None:
         """Log one safe, structured warning for a deterministic fallback."""
         logger.warning(
-            "Document synthesis fallback | provider=groq | fallback=true | "
+            "Document synthesis fallback | provider=%s | fallback=true | "
             "reason=%s | message=%s | elapsed_ms=%.2f",
+            provider,
             reason,
             message,
             (perf_counter() - started_at) * 1000,

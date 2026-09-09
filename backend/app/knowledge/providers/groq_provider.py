@@ -42,6 +42,8 @@ logger = logging.getLogger(__name__)
 class GroqKnowledgeProvider(BaseKnowledgeProvider):
     """Extract validated knowledge through one synchronous Groq request."""
 
+    provider_name = "groq"
+
     def extract(self, chunk: DocumentChunk) -> KnowledgeObject:
         """Request JSON-only knowledge extraction for one document chunk."""
         started_at = perf_counter()

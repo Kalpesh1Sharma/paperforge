@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.errors import install_error_handlers
 from app.api.routes.health import router as health_router
 from app.api.routes.reports import router as reports_router
+from app.api.routes.projects import router as projects_router
 from app.api.routes.upload import router as upload_router
 from app.config import settings
 
@@ -23,12 +24,13 @@ app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
     description=(
-        "Synchronous API for generating deterministic PaperForge research "
+        "Persistent background API for generating grounded PaperForge research "
         "reports from uploaded PDF documents."
     ),
     openapi_tags=[
         {"name": "Health", "description": "Service readiness endpoints."},
         {"name": "Reports", "description": "Report generation and retrieval."},
+        {"name": "Projects", "description": "Persistent workspace projects."},
         {"name": "Upload", "description": "Temporary research-file uploads."},
     ],
 )
@@ -37,7 +39,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Accept"],
 )
 
@@ -80,4 +82,5 @@ install_error_handlers(app)
 
 app.include_router(health_router)
 app.include_router(reports_router)
+app.include_router(projects_router)
 app.include_router(upload_router)

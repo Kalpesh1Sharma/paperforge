@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -13,6 +14,7 @@ from app.api.dependencies import get_paperforge_service
 from app.main import app
 from app.models.parsed_document import ParsedDocument
 from app.models.document_chunk import DocumentChunk
+from app.projects import ProjectService, SQLiteProjectStore
 from app.reports import (
     EnhancedResearchReport,
     Finding,
@@ -20,6 +22,7 @@ from app.reports import (
     MarkdownRenderer,
     ReportComposer,
     ReportRenderingError,
+    ReportMode,
     ResearchReport,
     SynthesisMetadata,
     SynthesisSourceEvidence,
@@ -29,7 +32,12 @@ from app.services.pipeline_service import (
     PipelineArtifacts,
     ProviderRateLimitedError,
 )
-from app.services.report_service import LocalReportStore, PaperForgeService
+from app.services.report_service import (
+    LocalReportStore,
+    PaperForgeService,
+    StagedMultiReport,
+    StagedReport,
+)
 from app.services.upload_service import UploadService
 
 
@@ -40,9 +48,18 @@ class _DeterministicPipelineService:
         self.calls: list[Path] = []
         self.many_calls: list[tuple[tuple[Path, ...], tuple[str, ...]]] = []
         self._fallback = fallback
+        self.modes: list[ReportMode | None] = []
 
-    def process(self, input_path: Path) -> PipelineArtifacts:
+    def process(
+        self,
+        input_path: Path,
+        *,
+        mode: ReportMode | None = None,
+        progress: object | None = None,
+    ) -> PipelineArtifacts:
+        del progress
         self.calls.append(input_path)
+        self.modes.append(mode)
         source_text = "PaperForge documents deterministic report generation."
         source_document = ParsedDocument(
             filename=input_path.name,
@@ -89,7 +106,7 @@ class _DeterministicPipelineService:
                 else (),
             ),
         )
-        presentation = ReportComposer().compose(
+        presentation = ReportComposer(mode=mode or ReportMode.PROFESSIONAL).compose(
             enhanced_report,
             source_document=source_document,
         )
@@ -106,8 +123,13 @@ class _DeterministicPipelineService:
         self,
         input_paths: tuple[Path, ...],
         source_filenames: tuple[str, ...],
+        *,
+        mode: ReportMode | None = None,
+        progress: object | None = None,
     ) -> MultiDocumentPipelineArtifacts:
+        del progress
         self.many_calls.append((input_paths, source_filenames))
+        self.modes.append(mode)
         documents = tuple(
             ParsedDocument(
                 filename=filename,
@@ -141,7 +163,7 @@ class _DeterministicPipelineService:
                 source_evidence=tuple(SynthesisSourceEvidence(chunk_id=chunk.chunk_id, confidence=0.5, references=()) for chunk in chunks),
             ),
         )
-        presentation = ReportComposer().compose(
+        presentation = ReportComposer(mode=mode or ReportMode.PROFESSIONAL).compose(
             enhanced_report, source_documents=documents, source_chunks=chunks
         )
         return MultiDocumentPipelineArtifacts(
@@ -263,7 +285,7 @@ def test_health_reports_and_all_persisted_formats(client: TestClient) -> None:
     metadata = client.get(f"/reports/{report_id}/metadata")
 
     assert report.status_code == 200
-    assert report.json()["cover"]["filename"] == "input.pdf"
+    assert report.json()["cover"]["filename"] == "research.pdf"
     assert html.status_code == 200 and html.headers["content-type"].startswith("text/html")
     assert "<!doctype html>" in html.text
     assert pdf.status_code == 200 and pdf.headers["content-type"].startswith("application/pdf")
@@ -290,10 +312,74 @@ def test_upload_creates_required_local_artifacts_and_uses_injected_pipeline(
         app.dependency_overrides.clear()
 
     report_directory = tmp_path / "reports" / str(report_id)
-    assert pipeline.calls == [report_directory / "input.pdf"]
+    assert pipeline.calls == [report_directory / "research.pdf"]
     assert {
         path.name for path in report_directory.iterdir()
     } >= {"input.pdf", "report.json", "report.html", "report.md", "report.pdf", "metadata.json"}
+    project = ProjectService(
+        SQLiteProjectStore(tmp_path / "reports" / "paperforge.db"),
+        tmp_path / "reports",
+    ).get(report_id)
+    assert project.report_id == report_id
+    assert project.sources[0].filename == "research.pdf"
+
+
+def test_wizard_settings_control_structure_cover_metadata_and_project(
+    tmp_path: Path,
+) -> None:
+    service, pipeline = _service(tmp_path)
+    app.dependency_overrides[get_paperforge_service] = lambda: service
+    settings = {
+        "project_title": "AI Governance Workspace",
+        "research_domain": "Artificial Intelligence Governance",
+        "purpose": "Brief an academic review panel.",
+        "structure": "technical",
+        "visual_template": "editorial",
+        "report_title": "Responsible AI in Public Research",
+        "author": "Kalpesh Sharma",
+        "organisation": "MNIT Jaipur",
+    }
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/reports",
+                files={"file": ("research.pdf", b"%PDF-1.7\n", "application/pdf")},
+                data={"settings": json.dumps(settings)},
+            )
+            report_id = UUID(response.json()["report_id"])
+            report = client.get(f"/reports/{report_id}").json()
+            metadata = client.get(f"/reports/{report_id}/metadata").json()
+            html = client.get(f"/reports/{report_id}/html").text
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 201
+    assert pipeline.modes == [ReportMode.TECHNICAL]
+    assert report["mode"] == "technical"
+    assert report["template_key"] == "editorial"
+    assert report["cover"]["title"] == settings["report_title"]
+    assert report["cover"]["author"] == "Kalpesh Sharma"
+    overview = next(
+        section for section in report["sections"]
+        if section["key"] == "document-overview"
+    )
+    assert any(settings["research_domain"] in paragraph for paragraph in overview["intro"])
+    assert not any("General Research" in paragraph for paragraph in overview["intro"])
+    assert metadata["settings"] == settings
+    assert "Kalpesh Sharma" in html and "MNIT Jaipur" in html
+    assert "Prepared by Kalpesh Sharma." in html
+    assert service._project_service.get(report_id).title == "AI Governance Workspace"
+
+
+def test_invalid_wizard_settings_are_rejected_before_generation(client: TestClient) -> None:
+    response = client.post(
+        "/reports",
+        files={"file": ("research.pdf", b"%PDF-1.7\n", "application/pdf")},
+        data={"settings": '{"structure":"unknown"}'},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_upload"
 
 
 def test_multi_upload_persists_ordered_sources_and_retrieves_without_rerunning(
@@ -310,7 +396,7 @@ def test_multi_upload_persists_ordered_sources_and_retrieves_without_rerunning(
         app.dependency_overrides.clear()
 
     report_directory = tmp_path / "reports" / str(report_id)
-    assert [path.name for path in (report_directory / "sources").iterdir()] == [
+    assert sorted(path.name for path in (report_directory / "sources").iterdir()) == [
         "001_alpha.pdf", "002_beta.pdf"
     ]
     assert pipeline.many_calls == [
@@ -318,6 +404,64 @@ def test_multi_upload_persists_ordered_sources_and_retrieves_without_rerunning(
     ]
     metadata = service.metadata(report_id)
     assert [item["filename"] for item in metadata["documents"]] == ["alpha.pdf", "beta.pdf"]
+
+
+def test_regeneration_stages_copies_and_preserves_original_settings(tmp_path: Path) -> None:
+    service, _ = _service(tmp_path)
+    app.dependency_overrides[get_paperforge_service] = lambda: service
+    settings = {
+        "project_title": "Regeneration source",
+        "research_domain": "Software Engineering",
+        "purpose": None,
+        "structure": "professional",
+        "visual_template": "paperforge-classic",
+        "report_title": "Reliable Systems",
+        "author": "Kalpesh Sharma",
+        "organisation": None,
+    }
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/reports",
+                files={"file": ("evidence.pdf", b"%PDF original", "application/pdf")},
+                data={"settings": json.dumps(settings)},
+            )
+            original_id = UUID(response.json()["report_id"])
+    finally:
+        app.dependency_overrides.clear()
+
+    staged, restored_settings = service.stage_regeneration(original_id)
+    assert isinstance(staged, StagedReport)
+    assert staged.report_id != original_id
+    assert staged.processing_path.read_bytes() == b"%PDF original"
+    assert restored_settings is not None
+    assert restored_settings.report_title == "Reliable Systems"
+    assert (tmp_path / "reports" / str(original_id) / "input.pdf").read_bytes() == b"%PDF original"
+
+
+def test_multi_report_regeneration_preserves_source_order(tmp_path: Path) -> None:
+    service, _ = _service(tmp_path)
+    app.dependency_overrides[get_paperforge_service] = lambda: service
+    try:
+        with TestClient(app) as client:
+            original_id = _create_multi_report(client)
+    finally:
+        app.dependency_overrides.clear()
+
+    staged, restored_settings = service.stage_regeneration(original_id)
+
+    assert isinstance(staged, StagedMultiReport)
+    assert staged.report_id != original_id
+    assert staged.source_filenames == ("alpha.pdf", "beta.pdf")
+    assert [path.name for path in staged.source_paths] == [
+        "001_alpha.pdf",
+        "002_beta.pdf",
+    ]
+    assert [path.read_bytes() for path in staged.source_paths] == [
+        b"%PDF-1.7\n",
+        b"%PDF-1.7\n",
+    ]
+    assert restored_settings is None
 
 
 def test_multi_upload_rejects_invalid_source_collections(client: TestClient) -> None:
@@ -353,7 +497,7 @@ def test_post_runs_synchronous_pdf_renderer_outside_the_asyncio_event_loop(
 
     report_directory = tmp_path / "reports" / str(report_id)
     assert renderer.executed_outside_event_loop is True
-    assert pipeline.calls == [report_directory / "input.pdf"]
+    assert pipeline.calls == [report_directory / "research.pdf"]
     assert (report_directory / "report.pdf").is_file()
     assert (report_directory / "report.json").is_file()
     assert (report_directory / "metadata.json").is_file()
@@ -417,7 +561,11 @@ def test_provider_rate_limit_and_openapi_contracts_are_exposed_safely() -> None:
     paths = openapi.json()["paths"]
     assert "/health" in paths
     assert "/reports" in paths
+    assert "/reports/jobs" in paths
+    assert "/reports/jobs/multi" in paths
+    assert "/reports/jobs/{job_id}" in paths
     assert "/reports/{report_id}" in paths
+    assert "/reports/{report_id}/regenerate" in paths
     assert "/reports/{report_id}/html" in paths
     assert "/reports/{report_id}/pdf" in paths
     multi_operation = paths["/reports/multi"]["post"]

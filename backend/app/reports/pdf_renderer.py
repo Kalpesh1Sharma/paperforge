@@ -67,10 +67,20 @@ class PDFRenderer:
         resolved_output_path = self._prepare_output_path(output_path)
         html = self._render_presentation_html(presentation)
 
-        return self._render_html_document(html, resolved_output_path)
+        return self._render_html_document(
+            html,
+            resolved_output_path,
+            pdf_info_metadata=self._presentation_pdf_metadata(presentation),
+        )
 
     @classmethod
-    def _render_html_document(cls, html: str, resolved_output_path: Path) -> Path:
+    def _render_html_document(
+        cls,
+        html: str,
+        resolved_output_path: Path,
+        *,
+        pdf_info_metadata: dict[str, str] | None = None,
+    ) -> Path:
         """Export already-rendered HTML through the shared PDF lifecycle."""
 
         try:
@@ -91,7 +101,7 @@ class PDFRenderer:
                     pdf_path,
                 )
                 cls._validate_pdf_file(pdf_path)
-                cls._write_pdf_metadata(pdf_path)
+                cls._write_pdf_metadata(pdf_path, pdf_info_metadata)
                 cls._validate_pdf_file(pdf_path)
                 cls._replace_output(pdf_path, resolved_output_path)
         except (InvalidResearchReportError, ReportRenderingError):
@@ -324,7 +334,10 @@ class PDFRenderer:
             ) from exc
 
     @staticmethod
-    def _write_pdf_metadata(pdf_path: Path) -> None:
+    def _write_pdf_metadata(
+        pdf_path: Path,
+        pdf_info_metadata: dict[str, str] | None = None,
+    ) -> None:
         """Attach stable PDF information fields and the document language."""
         metadata_path = pdf_path.with_name("report-metadata.pdf")
 
@@ -332,6 +345,8 @@ class PDFRenderer:
             with fitz.open(pdf_path) as document:
                 metadata = dict(document.metadata)
                 metadata.update(_PDF_INFO_METADATA)
+                if pdf_info_metadata is not None:
+                    metadata.update(pdf_info_metadata)
                 document.set_metadata(metadata)
                 document.set_language(_PDF_LANGUAGE)
                 document.save(metadata_path)
@@ -340,6 +355,17 @@ class PDFRenderer:
             raise ReportRenderingError(
                 "Unable to apply metadata to the rendered PDF."
             ) from exc
+
+    @staticmethod
+    def _presentation_pdf_metadata(
+        presentation: PresentationModel,
+    ) -> dict[str, str]:
+        """Project user-selected publication fields into the PDF info dictionary."""
+        return {
+            "title": presentation.cover.title,
+            "author": presentation.cover.author or "PaperForge",
+            "subject": presentation.cover.domain,
+        }
 
     @staticmethod
     def _replace_output(pdf_path: Path, output_path: Path) -> None:

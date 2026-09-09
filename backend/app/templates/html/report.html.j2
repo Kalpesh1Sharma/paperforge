@@ -12,7 +12,7 @@
 {{ print_css | safe }}
   </style>
 </head>
-<body class="publication-document">
+<body class="publication-document template-{{ presentation.template_key }}">
 {% macro evidence_details(evidence) -%}
 {% if evidence.confidence_label or evidence.source_labels or evidence.references %}
               <aside class="evidence-note" aria-label="Evidence and provenance">
@@ -42,7 +42,10 @@
       <aside class="publication-metadata" aria-labelledby="publication-details-heading">
         <h2 id="publication-details-heading" class="metadata-heading">Publication details</h2>
         <dl>
-          <div><dt>Prepared by</dt><dd>PaperForge</dd></div>
+          <div><dt>Prepared by</dt><dd>{{ presentation.cover.author or "PaperForge" }}</dd></div>
+{% if presentation.cover.organisation %}
+          <div><dt>Organisation</dt><dd>{{ presentation.cover.organisation }}</dd></div>
+{% endif %}
           <div><dt>Prepared from</dt><dd>{{ presentation.cover.filename or "Not available" }}</dd></div>
           <div><dt>Research domain</dt><dd>{{ presentation.cover.domain }}</dd></div>
           <div><dt>Document type</dt><dd>{{ presentation.cover.file_type or "Not available" }}</dd></div>
@@ -280,7 +283,7 @@
     </section>
 {% endfor %}
     <footer class="report-footer">
-      <p>Prepared by PaperForge. Source labels identify evidence in the report's ordered provenance ledger.</p>
+      <p>Prepared by {{ presentation.cover.author or "PaperForge" }}. Source labels identify evidence in the report's ordered provenance ledger.</p>
     </footer>
   </article>
 </body>

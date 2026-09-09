@@ -57,7 +57,7 @@ flowchart LR
     C -. filename + excerpt identity .-> H
 ```
 
-The backend owns document processing, report persistence, and review orchestration. The React frontend consumes the existing API: it uploads PDFs, previews persisted report HTML in an iframe, displays source metadata, and presents the controlled review state. It does not recreate the report renderer or call Groq or SuperDocs directly from the browser.
+The backend owns document processing, SQLite project persistence, report artifacts, and review orchestration. The React frontend consumes the API: it uploads PDFs, manages durable local projects, previews persisted report HTML in an iframe, displays source metadata, and presents the controlled review state. It does not recreate the report renderer or call AI providers or SuperDocs directly from the browser.
 
 ## Key design decisions
 
@@ -112,16 +112,24 @@ If a browser reload occurs, the frontend restores a report from `?report=<report
 
 ## Product UI
 
-The v0.12 React interface is intentionally a single focused workspace:
+The React interface presents PaperForge as one coherent research product:
 
-- Drag and drop or browse for up to five PDFs, preserving selected order.
-- See a deterministic processing narrative while the synchronous report request runs.
-- Read the persisted publication in an isolated report iframe.
-- Inspect real source filenames, page counts, and word counts from report metadata.
-- Open/download PDF, Markdown, and HTML artifacts without replacing the workspace.
-- Start the controlled Executive Summary review and inspect a bounded readable text diff instead of a large raw HTML block.
-- Approve or reject each pending proposal independently, with optional rejection feedback.
-- Download the reviewed DOCX only after backend export and verification succeed.
+- An editorial landing page explains the evidence-grounded workflow through a product-native preview.
+- A responsive application shell provides an overview, new-report flow, connection state, and mobile navigation.
+- Completed reports are associated with SQLite-backed projects and remain available across browsers and backend restarts.
+- The dashboard shows searchable recent projects; the dedicated Projects screen supports opening, renaming, and removing workspace records.
+- Existing completed report folders are indexed into the project database automatically on first startup.
+- Project storage contains report identifiers and display metadata only; source PDF contents and credentials are never placed in browser storage.
+- A seven-step new-report wizard collects project information, up to five ordered PDFs, report structure, visual-template direction, publication details, a final review, and explicit generation.
+- Professional, Executive, Technical, and Full selections use the corresponding real composition budgets; visual-template cards remain explicit Phase 1 placeholders until the Phase 2 renderer work.
+- Project name, research domain, report title, author, organisation, structure, and template choice are validated by the backend and persisted with report metadata.
+- Report generation runs as a persistent background job with real parsing, chunking, extraction, synthesis, review, composition, and rendering stages.
+- The processing page polls durable SQLite progress, permits navigation elsewhere, and restores the active job from its URL or browser marker after a reload.
+- Provider exhaustion, invalid documents, and storage failures become clear terminal job states rather than leaving the interface blocked on an HTTP request.
+- The report workspace provides a real document outline, anchored section navigation, a reloadable publication preview, source inspection, evidence confidence, export controls, version metadata, and controlled SuperDocs review.
+- Safe regeneration reuses the persisted source PDFs and wizard settings to create a new background report job while leaving the current report unchanged.
+- Job-status polling uses a lightweight SQLite reader, so checking progress does not repeatedly initialize configured AI providers.
+- Existing report URLs still restore metadata and review state through GET-only recovery.
 
 Provider-supplied `old_html` and `new_html` are never injected into the React tree. The UI converts them to plain text with `DOMParser`, trims common prefix/suffix context, and displays a bounded changed region as text.
 
@@ -133,8 +141,12 @@ Provider-supplied `old_html` and `new_html` are never injected into the React tr
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
-| `POST` | `/reports` | Upload one PDF and create a report. |
-| `POST` | `/reports/multi` | Upload two to five ordered PDFs and create one report. |
+| `POST` | `/reports/jobs` | Upload one PDF, persist a queued job, and return `202 Accepted` before generation completes. |
+| `POST` | `/reports/jobs/multi` | Upload two to five ordered PDFs and start one persistent background job. |
+| `GET` | `/reports/jobs/{job_id}` | Retrieve the job’s current stage, progress, safe error, and completed provider metadata. |
+| `POST` | `/reports/{report_id}/regenerate` | Create a new background report job from a completed report’s saved sources and settings. |
+| `POST` | `/reports` | Upload one PDF and create a report, optionally with JSON wizard settings in the multipart `settings` field. |
+| `POST` | `/reports/multi` | Upload two to five ordered PDFs and create one report, optionally with JSON wizard settings. |
 | `GET` | `/reports/{report_id}` | Retrieve the persisted presentation model. |
 | `GET` | `/reports/{report_id}/html` | Retrieve standalone report HTML. |
 | `GET` | `/reports/{report_id}/pdf` | Retrieve the original publication PDF. |
@@ -154,7 +166,7 @@ Interactive API documentation is available locally at `http://127.0.0.1:8000/doc
 
 - Python, FastAPI, and Pydantic
 - PyMuPDF for PDF extraction
-- Groq for configured knowledge extraction and document synthesis
+- Ordered BYOK providers (Gemini, Mistral, Groq, or a generic OpenAI-compatible endpoint) with deterministic fallback
 - Playwright for professional publication-style PDF rendering
 - httpx for the narrow SuperDocs client
 - Python standard-library ZIP/XML inspection for post-export DOCX verification
@@ -199,7 +211,7 @@ pip install -r requirements.txt
 python -m playwright install chromium
 ```
 
-Copy `.env.example` to `.env`, then configure `GROQ_API_KEY` for live report generation. Configure `SUPERDOCS_API_KEY` only when using the human-review workflow; the application starts normally without it, and only review functionality is unavailable.
+Copy `.env.example` to `.env`, choose the preferred `AI_PROVIDER`, and configure any providers you want in `AI_PROVIDER_ORDER`. Supported values are `gemini`, `mistral`, `groq`, `openai_compatible`, and `deterministic`. Incomplete providers are skipped and the deterministic provider needs no API key. Configure `SUPERDOCS_API_KEY` only when using the human-review workflow; the application starts normally without it, and only review functionality is unavailable.
 
 Run the API:
 
@@ -228,7 +240,7 @@ Default local URLs:
 - Backend: `http://127.0.0.1:8000`
 - API docs: `http://127.0.0.1:8000/docs`
 
-The frontend environment contains only `VITE_API_BASE_URL`. Do not place Groq or SuperDocs keys in Vite environment files.
+The frontend environment contains only `VITE_API_BASE_URL`. Never place AI-provider or SuperDocs keys in Vite environment files or browser storage.
 
 ## Configuration
 
@@ -236,8 +248,19 @@ The frontend environment contains only `VITE_API_BASE_URL`. Do not place Groq or
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `GROQ_API_KEY` | For live generation | Groq API key. Keep secret. |
-| `GROQ_MODEL` | No | Configured Groq model. |
+| `AI_PROVIDER` | No | `gemini`, `mistral`, `groq`, `openai_compatible`, or `deterministic`; defaults to `groq` for backward compatibility. |
+| `AI_PROVIDER_ORDER` | No | Comma-separated failover order. Defaults to the preferred `AI_PROVIDER`, then the remaining providers, and always ends with `deterministic`. |
+| `AI_MAX_RETRIES` | No | Retries for 429, timeout, network, and 5xx failures on compatible providers. |
+| `AI_RETRY_BASE_SECONDS` | No | Base delay for bounded exponential retry. |
+| `AI_TIMEOUT_SECONDS` | No | Request timeout for compatible providers. |
+| `GEMINI_API_KEY` / `GEMINI_MODEL` | When Gemini is in the order | Google AI Studio key and Gemini model; the default model is `gemini-3.6-flash`. |
+| `GEMINI_BASE_URL` | No | Official native Gemini API base URL. Legacy values ending in `/openai` are normalized automatically. |
+| `MISTRAL_API_KEY` / `MISTRAL_MODEL` | When Mistral is in the order | Mistral key and model. |
+| `MISTRAL_BASE_URL` | No | Official Mistral API base URL. |
+| `GROQ_API_KEY` / `GROQ_MODEL` | When Groq is in the order | Groq key and model. Existing configuration remains supported. |
+| `OPENAI_COMPATIBLE_API_KEY` | When generic selected | Backend-only key for OpenRouter, Cerebras, NVIDIA, or another compatible service. |
+| `OPENAI_COMPATIBLE_MODEL` | When generic selected | Provider-specific model identifier. |
+| `OPENAI_COMPATIBLE_BASE_URL` | When generic selected | HTTPS API base URL ending before `/chat/completions`; localhost HTTP is allowed for development. |
 | `SUPERDOCS_API_KEY` | For human review | SuperDocs API key. Keep secret. |
 | `SUPERDOCS_API_BASE_URL` | No | SuperDocs API base URL. |
 | `SUPERDOCS_POLL_INTERVAL_SECONDS` | No | Bounded review polling interval. |
@@ -247,6 +270,19 @@ The frontend environment contains only `VITE_API_BASE_URL`. Do not place Groq or
 | `API_HOST` | No | FastAPI bind host. |
 | `API_PORT` | No | FastAPI port. |
 | `LOG_LEVEL` | No | Application log level. |
+
+PaperForge tries fully configured providers in `AI_PROVIDER_ORDER`. After retries, authentication, configuration, quota, network, model-response, and request failures advance to the next provider; if every remote provider fails, local deterministic generation completes the report instead of returning HTTP 503. This means source content is sent to the next configured provider after a failure. Logs record only provider names and normalized failure categories, never keys, prompts, or response bodies. Report metadata identifies the provider that actually produced the synthesis, or `fallback` for local output.
+
+Gemini uses Google's native `generateContent` API with the `x-goog-api-key` header, including for newer `AQ.` authorization keys. Mistral and generic OpenAI-compatible providers use Bearer authentication.
+
+To run a small live provider contract check without uploading a real document:
+
+```bash
+cd backend
+python -m scripts.verify_ai_providers gemini mistral groq openai_compatible
+```
+
+Providers without complete configuration are reported as `SKIP`. The command prints only provider names, model names, and normalized exception classes; it never prints keys, prompts, or response bodies.
 
 ### Frontend
 
@@ -263,7 +299,7 @@ cd backend
 python -m pytest tests -q --basetemp .pytest-final
 ```
 
-The verified backend suite currently has **264 passing tests**.
+The verified backend suite currently has **290 passing tests**.
 
 Frontend validation:
 
@@ -285,7 +321,7 @@ Frontend typecheck, tests, and production build pass locally.
 
 ## Current scope
 
-v0.12 intentionally focuses on the research-to-reviewed-document workflow. It does not currently include authentication, user accounts, database-backed multi-user history, background job infrastructure, billing, cloud deployment, arbitrary document chat, or reviewed PDF generation. These are deliberate scope boundaries, not claims of production deployment.
+v0.12 intentionally focuses on the research-to-reviewed-document workflow. Its SQLite project and job databases are local single-workspace stores, and background work runs inside the API process rather than a distributed worker queue. It does not currently include authentication, user accounts, multi-user history, billing, cloud deployment, arbitrary document chat, or reviewed PDF generation. These are deliberate scope boundaries, not claims of production deployment.
 
 ## Repository structure
 
@@ -295,6 +331,7 @@ backend/
     api/
     chunking/
     integrations/
+    jobs/
     models/
     reports/
     services/
