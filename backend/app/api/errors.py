@@ -29,6 +29,13 @@ from app.services.review_service import (
     ReviewNotFoundError,
     ReviewVerificationError,
 )
+from app.projects import (
+    ProjectConflictError,
+    ProjectNotFoundError,
+    ProjectStorageError,
+    ProjectValidationError,
+)
+from app.jobs import ReportJobNotFoundError, ReportJobStorageError
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +141,76 @@ async def storage_error_handler(
         _request_id(request),
         request.url.path,
     )
+    return _error_response(
+        request,
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        code="report_storage_failure",
+        message="The report artifact could not be prepared.",
+    )
+
+
+async def project_not_found_handler(
+    request: Request, exc: ProjectNotFoundError
+) -> JSONResponse:
+    return _error_response(
+        request, status_code=404, code="project_not_found", message=str(exc)
+    )
+
+
+async def project_validation_handler(
+    request: Request, exc: ProjectValidationError
+) -> JSONResponse:
+    return _error_response(
+        request, status_code=400, code="invalid_project", message=str(exc)
+    )
+
+
+async def project_conflict_handler(
+    request: Request, exc: ProjectConflictError
+) -> JSONResponse:
+    return _error_response(
+        request, status_code=409, code="project_conflict", message=str(exc)
+    )
+
+
+async def project_storage_handler(
+    request: Request, exc: ProjectStorageError
+) -> JSONResponse:
+    logger.error(
+        "Project storage failure | request_id=%s | path=%s | outcome=failure",
+        _request_id(request),
+        request.url.path,
+    )
+    return _error_response(
+        request,
+        status_code=500,
+        code="project_storage_failure",
+        message="Project storage is temporarily unavailable.",
+    )
+
+
+async def report_job_not_found_handler(
+    request: Request, exc: ReportJobNotFoundError
+) -> JSONResponse:
+    return _error_response(
+        request, status_code=404, code="report_job_not_found", message=str(exc)
+    )
+
+
+async def report_job_storage_handler(
+    request: Request, exc: ReportJobStorageError
+) -> JSONResponse:
+    logger.error(
+        "Report job storage failure | request_id=%s | path=%s | outcome=failure",
+        _request_id(request),
+        request.url.path,
+    )
+    return _error_response(
+        request,
+        status_code=500,
+        code="report_job_storage_failure",
+        message="Report progress is temporarily unavailable.",
+    )
 
 
 async def review_not_found_handler(request: Request, exc: ReviewNotFoundError) -> JSONResponse:
@@ -162,12 +239,6 @@ async def review_protocol_handler(request: Request, exc: SuperDocsProtocolError)
 async def review_verification_handler(request: Request, exc: ReviewVerificationError) -> JSONResponse:
     """Never claim successful completion when exported DOCX verification fails."""
     return _error_response(request, status_code=500, code="review_verification_failed", message=str(exc))
-    return _error_response(
-        request,
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        code="report_storage_failure",
-        message="The report artifact could not be prepared.",
-    )
 
 
 async def request_validation_handler(
@@ -210,6 +281,12 @@ def install_error_handlers(app: FastAPI) -> None:
     )
     app.add_exception_handler(ReportStorageError, storage_error_handler)
     app.add_exception_handler(ReportOutputError, storage_error_handler)
+    app.add_exception_handler(ProjectNotFoundError, project_not_found_handler)
+    app.add_exception_handler(ProjectValidationError, project_validation_handler)
+    app.add_exception_handler(ProjectConflictError, project_conflict_handler)
+    app.add_exception_handler(ProjectStorageError, project_storage_handler)
+    app.add_exception_handler(ReportJobNotFoundError, report_job_not_found_handler)
+    app.add_exception_handler(ReportJobStorageError, report_job_storage_handler)
     app.add_exception_handler(ReviewNotFoundError, review_not_found_handler)
     app.add_exception_handler(ReviewInvalidStateError, review_state_handler)
     app.add_exception_handler(SuperDocsNotConfiguredError, review_unavailable_handler)

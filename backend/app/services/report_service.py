@@ -7,9 +7,9 @@ import logging
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 from uuid import UUID, uuid4
 
 from fastapi import UploadFile
@@ -17,8 +17,17 @@ from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from app.models.parsed_document import ParsedDocument
-from app.reports import HTMLRenderer, MarkdownRenderer, PDFRenderer, PresentationModel
+from app.projects import ProjectService, SQLiteProjectStore
+from app.reports import (
+    DocumentMetadata,
+    HTMLRenderer,
+    MarkdownRenderer,
+    PDFRenderer,
+    PresentationModel,
+    ReportGenerationSettings,
+)
 from app.reports.exceptions import ReportRenderingError
+from app.reports.publication_metadata import document_overview_intro
 from app.services.pipeline_service import (
     MultiDocumentPipelineArtifacts,
     PipelineArtifacts,
@@ -77,6 +86,27 @@ class GeneratedMultiReport:
     available_formats: tuple[StoredFormat, ...]
     source_documents: tuple[ParsedDocument, ...]
     generation_metadata: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class StagedReport:
+    """One validated source stored before background generation begins."""
+
+    report_id: UUID
+    processing_path: Path
+    source_filename: str
+
+
+@dataclass(frozen=True, slots=True)
+class StagedMultiReport:
+    """Validated ordered sources stored before background generation begins."""
+
+    report_id: UUID
+    source_paths: tuple[Path, ...]
+    source_filenames: tuple[str, ...]
+
+
+ProgressCallback = Callable[[str, int, str], None]
 
 
 class LocalReportStore:
@@ -190,6 +220,20 @@ class LocalReportStore:
             raise ReportStorageError("Unable to finalize the uploaded PDF.") from exc
         return destination
 
+    def prepare_uploaded_input(
+        self, report_id: UUID, temporary_path: Path, filename: str
+    ) -> Path:
+        """Restore a safe display filename while the report is being parsed."""
+        if Path(filename).name != filename or filename in {"", ".", ".."}:
+            raise ReportStorageError("Uploaded source filename is invalid.")
+        source = Path(temporary_path)
+        destination = self.report_directory(report_id) / filename
+        try:
+            source.replace(destination)
+        except OSError as exc:
+            raise ReportStorageError("Unable to prepare the uploaded PDF.") from exc
+        return destination
+
     def finalize_uploaded_sources(
         self,
         report_id: UUID,
@@ -262,6 +306,7 @@ class PaperForgeService:
         markdown_renderer: MarkdownRenderer | None = None,
         html_renderer: HTMLRenderer | None = None,
         pdf_renderer: PDFRenderer | None = None,
+        project_service: ProjectService | None = None,
     ) -> None:
         self._store = store
         self._pipeline_service = pipeline_service
@@ -269,15 +314,52 @@ class PaperForgeService:
         self._markdown_renderer = markdown_renderer or MarkdownRenderer()
         self._html_renderer = html_renderer or HTMLRenderer()
         self._pdf_renderer = pdf_renderer or PDFRenderer()
+        self._project_service = project_service or ProjectService(
+            SQLiteProjectStore(store.root_dir / "paperforge.db"),
+            store.root_dir,
+        )
 
-    async def create_report(self, uploaded_file: UploadFile) -> GeneratedReport:
+    async def create_report(
+        self,
+        uploaded_file: UploadFile,
+        settings: ReportGenerationSettings | None = None,
+    ) -> GeneratedReport:
         """Stream one PDF upload into local storage, then generate all formats."""
-        self._validate_pdf_upload(uploaded_file)
+        staged = await self.stage_report(uploaded_file)
+        try:
+            return await run_in_threadpool(
+                self.generate_report,
+                staged.processing_path,
+                "all",
+                report_id=staged.report_id,
+                settings=settings,
+            )
+        finally:
+            self.finalize_staged_report(staged)
+
+    async def create_multi_report(
+        self,
+        uploaded_files: list[UploadFile],
+        settings: ReportGenerationSettings | None = None,
+    ) -> GeneratedMultiReport:
+        """Stage 2–5 PDFs, then run one ordered combined pipeline in a worker."""
+        staged = await self.stage_multi_report(uploaded_files)
+        return await run_in_threadpool(
+            self.generate_multi_report,
+            staged.source_paths,
+            staged.source_filenames,
+            "all",
+            report_id=staged.report_id,
+            settings=settings,
+        )
+
+    async def stage_report(self, uploaded_file: UploadFile) -> StagedReport:
+        """Persist one upload so request-owned file handles can close immediately."""
+        filename = self._validate_pdf_upload(uploaded_file)
         report_id = uuid4()
         try:
             upload_response = await self._upload_service.save_files(
-                [uploaded_file],
-                report_id,
+                [uploaded_file], report_id
             )
         except UnsupportedFileTypeError as exc:
             raise InvalidReportUploadError("Only PDF uploads are accepted.") from exc
@@ -285,24 +367,20 @@ class PaperForgeService:
             raise InvalidReportUploadError(str(exc)) from exc
         except UploadStorageError as exc:
             raise ReportStorageError("Unable to persist the uploaded PDF.") from exc
-
-        stored_file = upload_response.files[0]
-        temporary_path = self._store.report_directory(report_id) / (
-            f"001_{stored_file.filename}"
+        temporary_path = self._store.report_directory(report_id) / f"001_{filename}"
+        processing_path = self._store.prepare_uploaded_input(
+            report_id, temporary_path, filename
         )
-        input_path = self._store.finalize_uploaded_input(report_id, temporary_path)
-        return await run_in_threadpool(
-            self.generate_report,
-            input_path,
-            "all",
+        return StagedReport(
             report_id=report_id,
+            processing_path=processing_path,
+            source_filename=filename,
         )
 
-    async def create_multi_report(
-        self,
-        uploaded_files: list[UploadFile],
-    ) -> GeneratedMultiReport:
-        """Stage 2–5 PDFs, then run one ordered combined pipeline in a worker."""
+    async def stage_multi_report(
+        self, uploaded_files: list[UploadFile]
+    ) -> StagedMultiReport:
+        """Persist ordered uploads before starting a background worker."""
         if not 2 <= len(uploaded_files) <= 5:
             raise InvalidReportUploadError("Provide between 2 and 5 PDF files.")
         filenames = tuple(self._validate_pdf_upload(file) for file in uploaded_files)
@@ -310,7 +388,9 @@ class PaperForgeService:
             raise InvalidReportUploadError("Uploaded PDF filenames must be unique.")
         report_id = uuid4()
         try:
-            upload_response = await self._upload_service.save_files(uploaded_files, report_id)
+            upload_response = await self._upload_service.save_files(
+                uploaded_files, report_id
+            )
         except UnsupportedFileTypeError as exc:
             raise InvalidReportUploadError("Only PDF uploads are accepted.") from exc
         except (UploadTooLargeError, UploadValidationError) as exc:
@@ -324,13 +404,82 @@ class PaperForgeService:
         source_paths = self._store.finalize_uploaded_sources(
             report_id, temporary_paths, filenames
         )
-        return await run_in_threadpool(
-            self.generate_multi_report,
-            source_paths,
-            filenames,
-            "all",
+        return StagedMultiReport(
             report_id=report_id,
+            source_paths=source_paths,
+            source_filenames=filenames,
         )
+
+    def finalize_staged_report(self, staged: StagedReport) -> None:
+        """Move a single staged source to its canonical durable input path."""
+        if staged.processing_path.exists():
+            self._store.finalize_uploaded_input(
+                staged.report_id, staged.processing_path
+            )
+
+    def stage_regeneration(
+        self, report_id: UUID
+    ) -> tuple[StagedReport | StagedMultiReport, ReportGenerationSettings | None]:
+        """Copy persisted sources into a new report without mutating the original."""
+        metadata = self.metadata(report_id)
+        settings_payload = metadata.get("settings")
+        try:
+            generation_settings = (
+                ReportGenerationSettings.model_validate_json(
+                    json.dumps(settings_payload)
+                )
+                if settings_payload is not None
+                else None
+            )
+        except (ValidationError, ValueError) as exc:
+            raise ReportStorageError("Stored report settings are invalid.") from exc
+
+        document_payloads = metadata.get("documents")
+        if document_payloads is None:
+            document_payload = metadata.get("document")
+            document_payloads = [document_payload] if document_payload is not None else []
+        if not isinstance(document_payloads, list) or not document_payloads:
+            raise ReportStorageError("Stored report source metadata is invalid.")
+        filenames = tuple(
+            self._stored_source_filename(document) for document in document_payloads
+        )
+
+        new_report_id = uuid4()
+        directory = self._store.ensure_report_directory(new_report_id)
+        try:
+            if len(filenames) == 1:
+                source = self._store.input_path(report_id)
+                if not source.is_file():
+                    raise ReportNotFoundError("The original report source is unavailable.")
+                processing_path = directory / filenames[0]
+                shutil.copyfile(source, processing_path)
+                return (
+                    StagedReport(new_report_id, processing_path, filenames[0]),
+                    generation_settings,
+                )
+
+            source_directory = self._store.report_directory(report_id) / "sources"
+            source_paths = tuple(sorted(source_directory.glob("[0-9][0-9][0-9]_*")))
+            if len(source_paths) != len(filenames) or not all(path.is_file() for path in source_paths):
+                raise ReportNotFoundError("The original report sources are unavailable.")
+            destination_directory = directory / "sources"
+            destination_directory.mkdir()
+            destinations = tuple(
+                destination_directory / f"{index:03d}_{filename}"
+                for index, filename in enumerate(filenames, start=1)
+            )
+            for source, destination in zip(source_paths, destinations, strict=True):
+                shutil.copyfile(source, destination)
+            return (
+                StagedMultiReport(new_report_id, destinations, filenames),
+                generation_settings,
+            )
+        except (ReportNotFoundError, ReportStorageError):
+            shutil.rmtree(directory, ignore_errors=True)
+            raise
+        except OSError as exc:
+            shutil.rmtree(directory, ignore_errors=True)
+            raise ReportStorageError("Unable to stage report regeneration.") from exc
 
     def generate_report(
         self,
@@ -338,6 +487,8 @@ class PaperForgeService:
         output_format: ReportFormat = "all",
         *,
         report_id: UUID | None = None,
+        settings: ReportGenerationSettings | None = None,
+        progress: ProgressCallback | None = None,
     ) -> GeneratedReport:
         """Run the full synchronous pipeline for one already-persisted PDF.
 
@@ -361,18 +512,35 @@ class PaperForgeService:
                 raise ReportStorageError("Unable to store the uploaded PDF.") from exc
             path = directory / "input.pdf"
 
-        artifacts = self._pipeline_service.process(path)
+        artifacts = (
+            self._pipeline_service.process(path, progress=progress)
+            if settings is None
+            else self._pipeline_service.process(
+                path, mode=settings.structure, progress=progress
+            )
+        )
+        artifacts = self._apply_generation_settings(artifacts, settings)
+        if progress is not None:
+            progress("rendering", 93, "Rendering and saving report formats")
         formats = self._materialize_artifacts(
             active_report_id,
             artifacts,
             output_format,
+            settings,
         )
-        return GeneratedReport(
+        result = GeneratedReport(
             report_id=active_report_id,
             available_formats=formats,
             source_document=artifacts.source_document,
             generation_metadata=self._generation_metadata(artifacts),
         )
+        self._project_service.attach_report(
+            result.report_id,
+            (result.source_document,),
+            result.available_formats,
+            title=settings.project_title if settings is not None else None,
+        )
+        return result
 
     def generate_multi_report(
         self,
@@ -381,18 +549,43 @@ class PaperForgeService:
         output_format: ReportFormat = "all",
         *,
         report_id: UUID,
+        settings: ReportGenerationSettings | None = None,
+        progress: ProgressCallback | None = None,
     ) -> GeneratedMultiReport:
         """Run one combined pipeline over already-persisted ordered PDFs."""
         if output_format not in {"all", "json", "html", "markdown", "pdf"}:
             raise InvalidReportUploadError("Requested output format is not supported.")
-        artifacts = self._pipeline_service.process_many(source_paths, source_filenames)
-        formats = self._materialize_artifacts(report_id, artifacts, output_format)
-        return GeneratedMultiReport(
+        artifacts = (
+            self._pipeline_service.process_many(
+                source_paths, source_filenames, progress=progress
+            )
+            if settings is None
+            else self._pipeline_service.process_many(
+                source_paths,
+                source_filenames,
+                mode=settings.structure,
+                progress=progress,
+            )
+        )
+        artifacts = self._apply_generation_settings(artifacts, settings)
+        if progress is not None:
+            progress("rendering", 93, "Rendering and saving report formats")
+        formats = self._materialize_artifacts(
+            report_id, artifacts, output_format, settings
+        )
+        result = GeneratedMultiReport(
             report_id=report_id,
             available_formats=formats,
             source_documents=artifacts.source_documents,
             generation_metadata=self._generation_metadata(artifacts),
         )
+        self._project_service.attach_report(
+            result.report_id,
+            result.source_documents,
+            result.available_formats,
+            title=settings.project_title if settings is not None else None,
+        )
+        return result
 
     def presentation(self, report_id: UUID) -> PresentationModel:
         """Load the immutable presentation JSON that backs report retrieval."""
@@ -427,6 +620,7 @@ class PaperForgeService:
         report_id: UUID,
         artifacts: PipelineArtifacts | MultiDocumentPipelineArtifacts,
         output_format: ReportFormat,
+        settings: ReportGenerationSettings | None = None,
     ) -> tuple[StoredFormat, ...]:
         """Persist requested immutable outputs with no renderer recomposition."""
         formats = self._requested_formats(output_format)
@@ -458,7 +652,7 @@ class PaperForgeService:
             self._store.write_json(
                 report_id,
                 "metadata.json",
-                self._metadata_payload(report_id, artifacts, formats),
+                self._metadata_payload(report_id, artifacts, formats, settings),
             )
         except ReportRenderingError as exc:
             raise ReportOutputError("Unable to render the requested report output.") from exc
@@ -491,6 +685,18 @@ class PaperForgeService:
         return safe_filename
 
     @staticmethod
+    def _stored_source_filename(payload: object) -> str:
+        if not isinstance(payload, dict):
+            raise ReportStorageError("Stored report source metadata is invalid.")
+        filename = payload.get("filename")
+        if not isinstance(filename, str):
+            raise ReportStorageError("Stored report source metadata is invalid.")
+        safe_filename = Path(filename.replace("\\", "/")).name
+        if safe_filename != filename or Path(safe_filename).suffix.lower() != ".pdf":
+            raise ReportStorageError("Stored report source metadata is invalid.")
+        return safe_filename
+
+    @staticmethod
     def _generation_metadata(
         artifacts: PipelineArtifacts | MultiDocumentPipelineArtifacts,
     ) -> dict[str, object]:
@@ -513,6 +719,7 @@ class PaperForgeService:
         report_id: UUID,
         artifacts: PipelineArtifacts | MultiDocumentPipelineArtifacts,
         formats: tuple[StoredFormat, ...],
+        settings: ReportGenerationSettings | None = None,
     ) -> dict[str, object]:
         """Build the safe metadata endpoint payload without report body text."""
         payload: dict[str, object] = {
@@ -521,6 +728,8 @@ class PaperForgeService:
             "available_formats": list(formats),
             "generation": cls._generation_metadata(artifacts),
         }
+        if settings is not None:
+            payload["settings"] = settings.model_dump(mode="json")
         if isinstance(artifacts, MultiDocumentPipelineArtifacts):
             payload["documents"] = [
                 cls._document_metadata(document)
@@ -529,6 +738,39 @@ class PaperForgeService:
         else:
             payload["document"] = cls._document_metadata(artifacts.source_document)
         return payload
+
+    @staticmethod
+    def _apply_generation_settings(
+        artifacts: PipelineArtifacts | MultiDocumentPipelineArtifacts,
+        settings: ReportGenerationSettings | None,
+    ) -> PipelineArtifacts | MultiDocumentPipelineArtifacts:
+        """Apply publication metadata without modifying evidence or report text."""
+        if settings is None:
+            return artifacts
+        cover_payload = artifacts.presentation.cover.model_dump(mode="python")
+        cover_payload.update(
+            {
+                "title": settings.report_title,
+                "domain": settings.research_domain,
+                "author": settings.author,
+                "organisation": settings.organisation,
+            }
+        )
+        cover = DocumentMetadata.model_validate(cover_payload)
+        sections = tuple(
+            section.model_copy(update={"intro": document_overview_intro(cover)})
+            if section.key == "document-overview"
+            else section
+            for section in artifacts.presentation.sections
+        )
+        presentation = artifacts.presentation.model_copy(
+            update={
+                "cover": cover,
+                "sections": sections,
+                "template_key": settings.visual_template,
+            }
+        )
+        return replace(artifacts, presentation=presentation)
 
     @staticmethod
     def _document_metadata(document: ParsedDocument) -> dict[str, object]:

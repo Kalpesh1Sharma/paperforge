@@ -205,6 +205,8 @@ class DocumentMetadata(_PresentationBaseModel):
     domain: str = Field(min_length=1)
     provider: str | None = None
     model: str | None = None
+    author: str | None = None
+    organisation: str | None = None
 
     @field_validator("title", "domain")
     @classmethod
@@ -212,7 +214,7 @@ class DocumentMetadata(_PresentationBaseModel):
         """Keep cover labels readable and deterministic."""
         return _non_blank(value, getattr(info, "field_name", "Cover value"))
 
-    @field_validator("filename", "file_type", "provider", "model")
+    @field_validator("filename", "file_type", "provider", "model", "author", "organisation")
     @classmethod
     def validate_optional_text(cls, value: str | None, info: object) -> str | None:
         """Reject blank optional source metadata when it is supplied."""
@@ -655,6 +657,12 @@ class PresentationModel(_PresentationBaseModel):
     """The complete immutable, renderer-agnostic composed report view."""
 
     cover: DocumentMetadata
+    template_key: Literal[
+        "paperforge-classic",
+        "modern-research",
+        "editorial",
+        "minimal",
+    ] = "paperforge-classic"
     table_of_contents: TableOfContents
     sections: tuple[PresentationSection, ...] = Field(min_length=1)
     mode: ReportMode = ReportMode.PROFESSIONAL

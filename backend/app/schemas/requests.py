@@ -20,3 +20,19 @@ class ReviewDecisionRequest(BaseModel):
 
     change_id: str = Field(min_length=1)
     feedback: str | None = Field(default=None, min_length=1)
+
+
+class CreateProjectRequest(BaseModel):
+    """Create one empty project ready for the new-report wizard."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    title: str = Field(min_length=1, max_length=100)
+
+
+class RenameProjectRequest(BaseModel):
+    """Rename exactly one existing project."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    title: str = Field(min_length=1, max_length=100)

@@ -15,7 +15,11 @@ from app.reports.enhanced_models import (
     SynthesisMetadata,
 )
 from app.reports.document_synthesizer import DocumentSynthesizer
+from app.reports.deterministic_document_synthesizer import (
+    DeterministicDocumentSynthesizer,
+)
 from app.reports.html_renderer import HTMLRenderer
+from app.reports.generation_settings import ReportGenerationSettings, VisualTemplate
 from app.reports.intelligence import (
     ConsolidatedDefinition,
     ConsolidatedReference,
@@ -56,6 +60,7 @@ from app.reports.synthesizer import ResearchSynthesizer
 __all__ = [
     "EnhancedResearchReport",
     "DocumentSynthesizer",
+    "DeterministicDocumentSynthesizer",
     "ConsolidatedDefinition",
     "ConsolidatedReference",
     "CompressionStatistic",
@@ -70,6 +75,7 @@ __all__ = [
     "GroupedFinding",
     "HiddenPresentationData",
     "HTMLRenderer",
+    "ReportGenerationSettings",
     "InvalidResearchReportError",
     "InsightCard",
     "IntelligentTimelineEvent",
@@ -100,4 +106,5 @@ __all__ = [
     "TableOfContentsEntry",
     "TimelineCard",
     "TimelineEvent",
+    "VisualTemplate",
 ]

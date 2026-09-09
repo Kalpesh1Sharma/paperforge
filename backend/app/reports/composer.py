@@ -53,6 +53,7 @@ from app.reports.presentation_models import (
     TableOfContentsEntry,
     TimelineCard,
 )
+from app.reports.publication_metadata import document_overview_intro
 
 _SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+")
 _PARAGRAPH_SPLIT_PATTERN = re.compile(r"\n\s*\n+")
@@ -2464,7 +2465,7 @@ class ReportComposer:
         )
         publication_mode = self._mode in {ReportMode.PROFESSIONAL, ReportMode.EXECUTIVE}
         report_guide = () if publication_mode else self._report_guide_intro()
-        overview = self._overview_intro(cover)
+        overview = document_overview_intro(cover)
         technical_groups = self._technical_groups(technical_cards)
         appendix_groups = self._appendix_groups(
             appendix_cards,
@@ -2862,18 +2863,6 @@ class ReportComposer:
         return (
             "The report moves from the document's central themes to its "
             "technical details, historical context, and supporting references.",
-        )
-
-    @staticmethod
-    def _overview_intro(cover: DocumentMetadata) -> tuple[str, ...]:
-        """Describe available source metadata without substituting placeholders."""
-        type_text = cover.file_type or "Not available"
-        page_text = str(cover.page_count) if cover.page_count is not None else "Not available"
-        return (
-            "This overview establishes the document's subject area and the "
-            "available publication details.",
-            f"The document is classified in {cover.domain}; source type: "
-            f"{type_text}; page count: {page_text}.",
         )
 
     @staticmethod

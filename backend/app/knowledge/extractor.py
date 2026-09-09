@@ -18,6 +18,12 @@ from app.knowledge.exceptions import (
     KnowledgeExtractionError,
     KnowledgeError,
     MalformedGroqJsonError,
+    ProviderMalformedResponseError,
+    ProviderNetworkError,
+    ProviderRateLimitError,
+    ProviderSchemaValidationError,
+    ProviderTemporaryServiceError,
+    ProviderTimeoutError,
     ProviderError,
     RecoverableProviderError,
     UnexpectedGroqResponseError,
@@ -126,7 +132,12 @@ class KnowledgeExtractor:
             update={"extraction_metadata": fallback_metadata}
         )
         self._validate_knowledge_object(fallback_object)
-        self._log_fallback(chunk, reason, started_at)
+        self._log_fallback(
+            chunk,
+            reason,
+            started_at,
+            provider=getattr(self._provider, "provider_name", "groq"),
+        )
         return fallback_object
 
     @staticmethod
@@ -134,15 +145,27 @@ class KnowledgeExtractor:
         """Map only known recoverable failures to safe normalized telemetry."""
         if isinstance(error, GroqRateLimitError):
             return "rate_limit"
+        if isinstance(error, ProviderRateLimitError):
+            return "rate_limit"
         if isinstance(error, GroqTimeoutError):
+            return "timeout"
+        if isinstance(error, ProviderTimeoutError):
             return "timeout"
         if isinstance(error, GroqNetworkError):
             return "connection"
+        if isinstance(error, ProviderNetworkError):
+            return "connection"
         if isinstance(error, GroqTemporaryServiceError):
+            return "api_unavailable"
+        if isinstance(error, ProviderTemporaryServiceError):
             return "api_unavailable"
         if isinstance(error, (MalformedGroqJsonError, UnexpectedGroqResponseError)):
             return "malformed_response"
+        if isinstance(error, ProviderMalformedResponseError):
+            return "malformed_response"
         if isinstance(error, (GroqSchemaValidationError, InvalidKnowledgeObjectError)):
+            return "schema_validation"
+        if isinstance(error, ProviderSchemaValidationError):
             return "schema_validation"
         return "provider_transient"
 
@@ -156,12 +179,15 @@ class KnowledgeExtractor:
         chunk: DocumentChunk,
         reason: str,
         started_at: float,
+        *,
+        provider: str = "groq",
     ) -> None:
         """Log one safe warning once a deterministic fallback is available."""
         logger.warning(
-            "Knowledge extraction fallback | provider=groq | fallback=true | "
+            "Knowledge extraction fallback | provider=%s | fallback=true | "
             "reason=%s | message=Using deterministic knowledge extraction. | "
             "chunk_id=%s | elapsed_ms=%.2f",
+            provider,
             reason,
             chunk.chunk_id,
             KnowledgeExtractor._elapsed_ms(started_at),
