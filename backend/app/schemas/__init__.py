@@ -6,26 +6,38 @@ from app.schemas.responses import (
     HealthResponse,
     MultiReportCreatedResponse,
     ReportCreatedResponse,
+    ReportEditingStateResponse,
     ReportJobResponse,
     ReportMetadataResponse,
     ReviewStateResponse,
 )
 from app.schemas.requests import (
+    ApproveOutlineRequest,
     CreateProjectRequest,
+    EditReportSectionRequest,
     RenameProjectRequest,
     ReviewDecisionRequest,
+    SetReportSectionLockRequest,
+    SwitchReportTemplateRequest,
+    TransformReportSectionRequest,
 )
 
 __all__ = [
     "ApiError",
+    "ApproveOutlineRequest",
     "ApiErrorResponse",
     "HealthResponse",
     "CreateProjectRequest",
+    "EditReportSectionRequest",
     "MultiReportCreatedResponse",
     "ReportCreatedResponse",
+    "ReportEditingStateResponse",
     "ReportJobResponse",
     "ReportMetadataResponse",
     "RenameProjectRequest",
     "ReviewDecisionRequest",
     "ReviewStateResponse",
+    "SetReportSectionLockRequest",
+    "SwitchReportTemplateRequest",
+    "TransformReportSectionRequest",
 ]

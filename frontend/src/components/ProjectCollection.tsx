@@ -47,7 +47,7 @@ export function ProjectCollection({ projects, onOpen, onRename, onDelete }: Prop
         <p className="project-sources">{project.sourceNames.length ? project.sourceNames.join(", ") : "Source details unavailable"}</p>
       </>}
       <div className="project-meta"><span><ClockIcon />{formatDate(project.updatedAt)}</span><span>{project.sourceNames.length} {project.sourceNames.length === 1 ? "source" : "sources"} · {project.wordCount.toLocaleString()} words</span></div>
-      {deleting === project.id ? <div className="delete-confirm" role="alert"><p>Remove this report from your workspace?</p><div><button className="small-button danger" onClick={() => onDelete(project.id)}>Delete</button><button className="small-button" onClick={() => setDeleting(null)}>Cancel</button></div></div> : <div className="project-actions">
+      {deleting === project.id ? <div className="delete-confirm" role="alert"><p>Permanently delete this project, its sources, reports and exports?</p><div><button className="small-button danger" onClick={() => onDelete(project.id)}>Delete permanently</button><button className="small-button" onClick={() => setDeleting(null)}>Cancel</button></div></div> : <div className="project-actions">
         <button className="open-project" disabled={!project.reportId} onClick={() => project.reportId && onOpen(project.reportId)}>{project.reportId ? "Open report" : "Draft project"} <ArrowRightIcon /></button>
         <button aria-label={`Rename ${project.title}`} onClick={() => beginRename(project)}><PencilIcon /></button>
         <button aria-label={`Delete ${project.title}`} onClick={() => { setRenaming(null); setDeleting(project.id); }}><TrashIcon /></button>

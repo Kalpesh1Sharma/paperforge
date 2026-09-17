@@ -1,7 +1,7 @@
-import type { ApiError, CreationResponse, Health, ProjectApiRecord, ReportJob, ReportMetadata, ReportPresentation, ReviewState, WizardSettings } from "./types";
+import type { ApiError, CreationResponse, Health, OutlineProposal, ProjectApiRecord, ReportEditingState, ReportJob, ReportMetadata, ReportPresentation, ReportSectionSetting, ReportTransformAction, ReviewState, VisualTemplate, WizardSettings } from "./types";
 
 const baseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "http://127.0.0.1:8000";
-export const reportUrl = (id: string, format: "html" | "pdf" | "markdown" | "docx") => `${baseUrl}/reports/${id}/${format}`;
+export const reportUrl = (id: string, format: "html" | "pdf" | "markdown" | "docx" | "editable-docx") => `${baseUrl}/reports/${id}/${format}`;
 
 export class PaperForgeApiError extends Error { constructor(public readonly detail: ApiError, public readonly status: number) { super(detail.message); } }
 
@@ -22,9 +22,16 @@ export const api = {
   createMultiReport: (files: File[], settings?: WizardSettings) => { const form = new FormData(); files.forEach((file) => form.append("files", file)); if (settings) form.append("settings", JSON.stringify(settings)); return request<CreationResponse>("/reports/multi", { method: "POST", body: form }); },
   createReportJob: (file: File, settings: WizardSettings) => { const form = new FormData(); form.append("file", file); form.append("settings", JSON.stringify(settings)); return request<ReportJob>("/reports/jobs", { method: "POST", body: form }); },
   createMultiReportJob: (files: File[], settings: WizardSettings) => { const form = new FormData(); files.forEach((file) => form.append("files", file)); form.append("settings", JSON.stringify(settings)); return request<ReportJob>("/reports/jobs/multi", { method: "POST", body: form }); },
+  proposeOutline: (files: File[], settings: WizardSettings) => { const form = new FormData(); files.forEach((file) => form.append("files", file)); form.append("settings", JSON.stringify(settings)); return request<OutlineProposal>("/reports/outlines", { method: "POST", body: form }); },
+  approveOutline: (id: string, sections: ReportSectionSetting[]) => request<OutlineProposal>(`/reports/outlines/${id}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sections }) }),
   reportJob: (id: string) => request<ReportJob>(`/reports/jobs/${id}`),
   regenerateReport: (id: string) => request<ReportJob>(`/reports/${id}/regenerate`, { method: "POST" }),
   presentation: (id: string) => request<ReportPresentation>(`/reports/${id}`),
+  editingState: (id: string) => request<ReportEditingState>(`/reports/${id}/editing`),
+  editSection: (id: string, key: string, content: string) => request<ReportEditingState>(`/reports/${id}/sections/${key}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }) }),
+  transformSection: (id: string, key: string, action: ReportTransformAction) => request<ReportEditingState>(`/reports/${id}/sections/${key}/transform`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) }),
+  setSectionLock: (id: string, key: string, locked: boolean) => request<ReportEditingState>(`/reports/${id}/sections/${key}/lock`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ locked }) }),
+  switchTemplate: (id: string, template: VisualTemplate) => request<ReportEditingState>(`/reports/${id}/template`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ template }) }),
   metadata: (id: string) => request<ReportMetadata>(`/reports/${id}/metadata`),
   projects: () => request<ProjectApiRecord[]>("/projects"),
   project: (id: string) => request<ProjectApiRecord>(`/projects/${id}`),

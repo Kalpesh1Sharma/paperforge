@@ -240,3 +240,34 @@ services/superdocs.py
 - Human approval workflow
 - Collaborative editing
 - Multiple export formats
+
+---
+
+# Phase 2 Batch 9 — Report editing
+
+Completed reports expose a revisioned editing state at
+`GET /reports/{report_id}/editing`. Direct edits use
+`PATCH /reports/{report_id}/sections/{section_key}`; assisted edits use
+`POST /reports/{report_id}/sections/{section_key}/transform` with `rewrite`,
+`shorten`, or `expand`.
+
+`PATCH /reports/{report_id}/sections/{section_key}/lock` protects approved
+sections. Locked sections reject direct and assisted edits with HTTP 409.
+`PATCH /reports/{report_id}/template` switches among the three Phase 2 formats
+and rerenders derivatives from the same presentation content. None of these
+operations reruns parsing, knowledge extraction, or document synthesis.
+
+---
+
+# Phase 2 Batches 10–11 — Citations, quality, export and deployment
+
+Every report now includes page-aware evidence labels when the source is a PDF.
+The configured citation policy projects those labels to source-linked, APA,
+IEEE, or Harvard display and optionally creates a source-deduplicated
+bibliography. `GET /reports/{report_id}` includes the persisted `quality` result
+with claim support counts and safe actionable issues.
+
+`GET /reports/{report_id}/editable-docx` downloads the normal locally generated
+Word export. It is always distinct from `GET /reports/{report_id}/docx`, which
+remains available only after a completed SuperDocs review. Deleting a completed
+project permanently removes its associated local sources and exports.

@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { api, PaperForgeApiError, reportUrl } from "../api/client";
-import type { ReportMetadata, ReportPresentation, ReviewState } from "../api/types";
+import type { ReportEditingState, ReportMetadata, ReportPresentation, ReviewState, VisualTemplate } from "../api/types";
 import { DownloadIcon, FileIcon, RefreshIcon } from "./Icons";
 import { ReportPreview } from "./ReportPreview";
+import { ReportEditor } from "./ReportEditor";
 import { ReviewPanel } from "./ReviewPanel";
 
 type Props = { id: string; metadata: ReportMetadata; review: ReviewState | null; busy: boolean; onStart: () => void; onApprove: (id: string) => void; onReject: (id: string, feedback?: string) => void; onRefresh: () => void; onNewReport: () => void; onRegenerate: () => void; onBack: () => void };
@@ -15,6 +16,12 @@ export function ReportWorkspace({ id, metadata, review, busy, onStart, onApprove
   const [presentationError, setPresentationError] = useState<string | null>(null);
   const [activeAnchor, setActiveAnchor] = useState<string | null>(null);
   const [confirmRegenerate, setConfirmRegenerate] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [artifactRevision, setArtifactRevision] = useState(1);
+  const [editingTemplate, setEditingTemplate] = useState<VisualTemplate | null>(null);
+  const savedSettings = metadata.settings;
+  const versionTwoSettings = savedSettings && "schema_version" in savedSettings ? savedSettings : null;
+  const legacySettings = savedSettings && "structure" in savedSettings ? savedSettings : null;
 
   useEffect(() => {
     let active = true;
@@ -27,16 +34,16 @@ export function ReportWorkspace({ id, metadata, review, busy, onStart, onApprove
       if (active) setPresentationError(caught instanceof PaperForgeApiError ? caught.message : "Report navigation could not be loaded.");
     });
     return () => { active = false; };
-  }, [id]);
+  }, [id, artifactRevision]);
 
-  const reportTitle = metadata.settings?.report_title ?? presentation?.cover.title ?? "Grounded report";
+  const reportTitle = versionTwoSettings?.publication.title ?? legacySettings?.report_title ?? presentation?.cover.title ?? "Grounded report";
   const generatedOn = presentation?.cover.generated_on ? new Date(`${presentation.cover.generated_on}T00:00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "Date unavailable";
   const confidence = presentation?.cover.mean_confidence == null ? null : Math.round(presentation.cover.mean_confidence * 100);
 
   return <main className="workspace-page page-enter">
     <header className="workspace-header">
-      <div><button aria-label="Back to projects" className="workspace-back" onClick={onBack}>Projects</button><span aria-hidden="true">/</span><span>Report workspace</span><h1>{reportTitle}</h1><p>{metadata.settings?.research_domain ?? presentation?.cover.domain ?? "Research report"} · {sources.length} {sources.length === 1 ? "source" : "sources"}</p></div>
-      <div className="workspace-header-actions"><span className="ready-pill"><i /> Report ready</span><button className="button button-quiet" onClick={onNewReport}>New report</button></div>
+      <div><button aria-label="Back to projects" className="workspace-back" onClick={onBack}>Projects</button><span aria-hidden="true">/</span><span>Report workspace</span><h1>{reportTitle}</h1><p>{savedSettings?.research_domain ?? presentation?.cover.domain ?? "Research report"} · {sources.length} {sources.length === 1 ? "source" : "sources"}</p></div>
+      <div className="workspace-header-actions"><span className="ready-pill"><i /> Report ready</span><button className="button button-primary" onClick={() => setEditorOpen(true)}>Edit report</button><button className="button button-quiet" onClick={onNewReport}>New report</button></div>
     </header>
 
     <div className="workspace-grid">
@@ -46,7 +53,7 @@ export function ReportWorkspace({ id, metadata, review, busy, onStart, onApprove
         {confidence !== null && <div className="workspace-confidence"><div><span>Evidence confidence</span><strong>{confidence}%</strong></div><i><b style={{ width: `${confidence}%` }} /></i></div>}
       </aside>
 
-      <ReportPreview reportId={id} anchor={activeAnchor} title={reportTitle} />
+      <ReportPreview reportId={id} anchor={activeAnchor} title={reportTitle} artifactRevision={artifactRevision} />
 
       <aside className="workspace-inspector">
         <section>
@@ -57,17 +64,20 @@ export function ReportWorkspace({ id, metadata, review, busy, onStart, onApprove
 
         <section>
           <div className="panel-heading"><span className="eyebrow">Export report</span><strong>{metadata.available_formats.length - (metadata.available_formats.includes("json") ? 1 : 0)} formats</strong></div>
-          <div className="workspace-downloads"><a href={reportUrl(id, "pdf")} target="_blank" rel="noopener noreferrer"><DownloadIcon /><span><strong>PDF document</strong><small>Publication-ready</small></span></a><a href={reportUrl(id, "markdown")} target="_blank" rel="noopener noreferrer"><DownloadIcon /><span><strong>Markdown</strong><small>Editable source</small></span></a><a href={reportUrl(id, "html")} target="_blank" rel="noopener noreferrer"><DownloadIcon /><span><strong>HTML page</strong><small>Standalone report</small></span></a></div>
+          <div className="workspace-downloads"><a href={reportUrl(id, "pdf")} target="_blank" rel="noopener noreferrer"><DownloadIcon /><span><strong>PDF document</strong><small>Publication-ready</small></span></a><a href={reportUrl(id, "editable-docx")} target="_blank" rel="noopener noreferrer"><DownloadIcon /><span><strong>Editable DOCX</strong><small>Normal Word document</small></span></a><a href={reportUrl(id, "markdown")} target="_blank" rel="noopener noreferrer"><DownloadIcon /><span><strong>Markdown</strong><small>Editable source</small></span></a><a href={reportUrl(id, "html")} target="_blank" rel="noopener noreferrer"><DownloadIcon /><span><strong>HTML page</strong><small>Standalone report</small></span></a></div>
         </section>
 
+        {presentation?.quality && <section className={`quality-panel quality-${presentation.quality.status}`}><div className="panel-heading"><span className="eyebrow">Quality checks</span><strong>{presentation.quality.status === "passed" ? "Passed" : `${presentation.quality.issues.length} ${presentation.quality.issues.length === 1 ? "issue" : "issues"}`}</strong></div><p>{presentation.quality.supported_claims} of {presentation.quality.checked_claims} checked claims link to source evidence.</p>{presentation.quality.issues.length > 0 && <ul>{presentation.quality.issues.slice(0, 5).map((issue, index) => <li key={`${issue.code}-${issue.section_key ?? "report"}-${index}`}><b>{titleCase(issue.code)}</b><span>{issue.message}</span></li>)}</ul>}</section>}
+
         <section className="version-panel">
-          <div className="panel-heading"><span className="eyebrow">Version information</span><strong>v1</strong></div>
-          <dl><div><dt>Created</dt><dd>{generatedOn}</dd></div><div><dt>Structure</dt><dd>{titleCase(metadata.settings?.structure ?? presentation?.mode ?? "professional")}</dd></div><div><dt>Template</dt><dd>{titleCase(metadata.settings?.visual_template ?? presentation?.template_key ?? "paperforge-classic")}</dd></div><div><dt>Synthesis</dt><dd>{metadata.generation.provider}{metadata.generation.model ? ` · ${metadata.generation.model}` : ""}</dd></div><div><dt>Report ID</dt><dd title={id}>{id.slice(0, 8)}…</dd></div></dl>
+          <div className="panel-heading"><span className="eyebrow">Version information</span><strong>v{presentation?.revision ?? artifactRevision}</strong></div>
+          <dl><div><dt>Created</dt><dd>{generatedOn}</dd></div><div><dt>Structure</dt><dd>{titleCase(versionTwoSettings?.report_structure.preset ?? legacySettings?.structure ?? presentation?.mode ?? "professional")}</dd></div><div><dt>Template</dt><dd>{titleCase(editingTemplate ?? versionTwoSettings?.visual_theme.template ?? legacySettings?.visual_template ?? presentation?.template_key ?? "paperforge-classic")}</dd></div><div><dt>Citations</dt><dd>{titleCase(versionTwoSettings?.citations.style ?? presentation?.citation_style ?? "source-linked")}</dd></div><div><dt>Synthesis</dt><dd>{metadata.generation.provider}{metadata.generation.model ? ` · ${metadata.generation.model}` : ""}</dd></div><div><dt>Report ID</dt><dd title={id}>{id.slice(0, 8)}…</dd></div></dl>
           {!confirmRegenerate ? <button className="regenerate-button" disabled={busy} onClick={() => setConfirmRegenerate(true)}><RefreshIcon /> Regenerate from saved sources</button> : <div className="regenerate-confirm"><p>This creates a new report. The current version stays unchanged.</p><div><button className="secondary" onClick={() => setConfirmRegenerate(false)}>Cancel</button><button className="primary" disabled={busy} onClick={onRegenerate}>{busy ? "Starting…" : "Regenerate"}</button></div></div>}
         </section>
 
         <section><ReviewPanel review={review} busy={busy} onStart={onStart} onApprove={onApprove} onReject={onReject} onRefresh={onRefresh} docxUrl={reportUrl(id, "docx")} /></section>
       </aside>
     </div>
+    <ReportEditor reportId={id} open={editorOpen} onClose={() => setEditorOpen(false)} onChanged={(next: ReportEditingState) => { setArtifactRevision(next.revision); setEditingTemplate(next.template_key); }} />
   </main>;
 }

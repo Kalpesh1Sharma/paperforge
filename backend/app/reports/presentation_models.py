@@ -207,6 +207,10 @@ class DocumentMetadata(_PresentationBaseModel):
     model: str | None = None
     author: str | None = None
     organisation: str | None = None
+    subtitle: str | None = None
+    university: str | None = None
+    department: str | None = None
+    publication_type: str | None = None
 
     @field_validator("title", "domain")
     @classmethod
@@ -214,7 +218,10 @@ class DocumentMetadata(_PresentationBaseModel):
         """Keep cover labels readable and deterministic."""
         return _non_blank(value, getattr(info, "field_name", "Cover value"))
 
-    @field_validator("filename", "file_type", "provider", "model", "author", "organisation")
+    @field_validator(
+        "filename", "file_type", "provider", "model", "author", "organisation",
+        "subtitle", "university", "department", "publication_type",
+    )
     @classmethod
     def validate_optional_text(cls, value: str | None, info: object) -> str | None:
         """Reject blank optional source metadata when it is supplied."""
@@ -415,6 +422,47 @@ class ReferenceCard(_PresentationBaseModel):
         return _non_blank(value, "Reference")
 
 
+class BibliographyEntry(_PresentationBaseModel):
+    """One stable, human-readable source entry for the selected citation style."""
+
+    number: int = Field(ge=1)
+    source_label: str = Field(min_length=1)
+    citation: str = Field(min_length=1)
+
+    @field_validator("source_label", "citation")
+    @classmethod
+    def validate_text(cls, value: str, info: object) -> str:
+        return _non_blank(value, getattr(info, "field_name", "Bibliography value"))
+
+
+class QualityIssue(_PresentationBaseModel):
+    """One actionable, non-secret report quality warning."""
+
+    code: Literal[
+        "unsupported-claim",
+        "missing-section",
+        "missing-bibliography",
+        "formatting",
+    ]
+    severity: Literal["warning", "error"]
+    message: str = Field(min_length=1, max_length=300)
+    section_key: PresentationSectionKey | None = None
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str) -> str:
+        return _non_blank(value, "Quality issue message")
+
+
+class ReportQuality(_PresentationBaseModel):
+    """Deterministic quality-check outcome stored with every presentation."""
+
+    status: Literal["passed", "warnings", "blocked"] = "passed"
+    checked_claims: int = Field(default=0, ge=0)
+    supported_claims: int = Field(default=0, ge=0)
+    issues: tuple[QualityIssue, ...] = Field(default_factory=tuple)
+
+
 class MetricCard(_PresentationBaseModel):
     """One source-backed, display-safe labelled metric.
 
@@ -579,7 +627,7 @@ class CompressionStatistic(_PresentationBaseModel):
 
 
 class PresentationSection(_PresentationBaseModel):
-    """One typed, anchor-bearing section in the fixed composed report order."""
+    """One typed, anchor-bearing section in the configured report order."""
 
     key: PresentationSectionKey
     heading: str = Field(min_length=1)
@@ -592,6 +640,8 @@ class PresentationSection(_PresentationBaseModel):
     evidence_tables: tuple[EvidenceTable, ...] = Field(default_factory=tuple)
     appendix_groups: tuple[AppendixGroup, ...] = Field(default_factory=tuple)
     references: tuple[ReferenceCard, ...] = Field(default_factory=tuple)
+    edited_content: str | None = Field(default=None, max_length=30000)
+    locked: bool = False
 
     @field_validator("heading")
     @classmethod
@@ -612,6 +662,17 @@ class PresentationSection(_PresentationBaseModel):
     def validate_intro(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         """Require nonblank preamble paragraphs when present."""
         return _non_blank_unique_text(value, "Section intro")
+
+    @field_validator("edited_content")
+    @classmethod
+    def validate_edited_content(cls, value: str | None) -> str | None:
+        """Persist only intentional, nonblank user-edited section bodies."""
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Edited section content must not be blank.")
+        return normalized
 
 
 class TableOfContentsEntry(_PresentationBaseModel):
@@ -660,12 +721,19 @@ class PresentationModel(_PresentationBaseModel):
     template_key: Literal[
         "paperforge-classic",
         "modern-research",
+        "ieee-inspired-technical",
         "editorial",
         "minimal",
     ] = "paperforge-classic"
+    page_size: Literal["A4", "letter"] = "A4"
+    content_density: Literal["comfortable", "compact"] = "comfortable"
+    accent_color: str | None = None
     table_of_contents: TableOfContents
     sections: tuple[PresentationSection, ...] = Field(min_length=1)
     mode: ReportMode = ReportMode.PROFESSIONAL
+    citation_style: Literal["source-linked", "apa", "ieee", "harvard"] = "source-linked"
+    bibliography: tuple[BibliographyEntry, ...] = Field(default_factory=tuple)
+    quality: ReportQuality = Field(default_factory=ReportQuality)
     budget: PresentationBudget = Field(default_factory=PresentationBudget.professional)
     hidden_content: HiddenPresentationData = Field(
         default_factory=HiddenPresentationData
@@ -673,6 +741,7 @@ class PresentationModel(_PresentationBaseModel):
     compression_statistics: tuple[CompressionStatistic, ...] = Field(
         default_factory=tuple
     )
+    revision: int = Field(default=1, ge=1)
 
     @field_validator("compression_statistics")
     @classmethod
@@ -686,26 +755,29 @@ class PresentationModel(_PresentationBaseModel):
             raise ValueError("Compression statistic categories must be unique.")
         return value
 
+    @field_validator("accent_color")
+    @classmethod
+    def validate_accent_color(cls, value: str | None) -> str | None:
+        if value is not None and not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+            raise ValueError("accent_color must be a six-digit hexadecimal colour.")
+        return value.lower() if value else None
+
     @model_validator(mode="after")
-    def validate_fixed_section_navigation(self) -> "PresentationModel":
-        """Require an ordered, canonical subset with an exact TOC projection."""
-        known_sections = {key: (heading, anchor_id) for key, heading, anchor_id in PRESENTATION_SECTION_SPECS}
-        actual_sections = tuple(
-            (section.key, section.heading, section.anchor_id)
-            for section in self.sections
-        )
+    def validate_section_navigation(self) -> "PresentationModel":
+        """Allow configured order/headings while preserving safe known anchors."""
+        known_anchors = {
+            key: anchor_id for key, _heading, anchor_id in PRESENTATION_SECTION_SPECS
+        }
         actual_keys = tuple(section.key for section in self.sections)
-        expected_keys = tuple(key for key, _, _ in PRESENTATION_SECTION_SPECS)
         if (
             len(set(actual_keys)) != len(actual_keys)
-            or actual_keys != tuple(key for key in expected_keys if key in actual_keys)
             or any(
-                known_sections.get(key) != (heading, anchor_id)
-                for key, heading, anchor_id in actual_sections
+                known_anchors.get(section.key) != section.anchor_id
+                for section in self.sections
             )
         ):
             raise ValueError(
-                "PresentationModel sections must be an ordered subset of known section specifications."
+                "PresentationModel sections must use unique known keys and canonical anchors."
             )
 
         expected_entries = tuple(
@@ -721,7 +793,7 @@ class PresentationModel(_PresentationBaseModel):
     def sections_as_specs(
         self,
     ) -> tuple[tuple[PresentationSectionKey, str, str], ...]:
-        """Return the fixed section projection without exposing mutable state."""
+        """Return the configured section projection without exposing mutable state."""
         return tuple(
             (section.key, section.heading, section.anchor_id)
             for section in self.sections

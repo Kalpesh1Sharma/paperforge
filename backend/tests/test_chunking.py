@@ -18,7 +18,7 @@ from app.chunking import (
 from app.chunking.strategy import ChunkSpan
 from app.chunking.utils import count_words_and_content
 from app.models.document_chunk import DocumentChunk
-from app.models.parsed_document import ParsedDocument
+from app.models.parsed_document import ParsedDocument, ParsedPageSpan
 from app.parsers import ParserFactory
 
 
@@ -87,6 +87,37 @@ def test_small_document_returns_structured_chunk() -> None:
         "source_metadata": {"author": "PaperForge"},
     }
     _assert_source_spans(document, chunks)
+
+
+def test_pdf_page_ranges_are_retained_on_overlapping_chunks() -> None:
+    first = "First-page evidence. " * 12
+    second = "Second-page evidence. " * 12
+    text = first + "\n" + second
+    document = ParsedDocument(
+        filename="evidence.pdf",
+        file_type="pdf",
+        extracted_text=text,
+        page_count=2,
+        word_count=len(text.split()),
+        character_count=len(text),
+        pages=(
+            ParsedPageSpan(page_number=1, start_char=0, end_char=len(first)),
+            ParsedPageSpan(page_number=2, start_char=len(first) + 1, end_char=len(text)),
+        ),
+    )
+
+    chunks = DocumentChunker().chunk(
+        document,
+        ChunkingConfig(max_chars=260, overlap_chars=60, min_chunk_chars=60),
+    )
+
+    assert chunks[0].metadata["page_number"] == 1
+    assert chunks[-1].metadata["page_end_number"] == 2
+    assert any(
+        chunk.metadata.get("page_number") == 1
+        and chunk.metadata.get("page_end_number") == 2
+        for chunk in chunks
+    )
 
 
 def test_chunks_have_exact_offsets_and_cover_large_document() -> None:

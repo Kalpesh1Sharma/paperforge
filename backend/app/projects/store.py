@@ -116,6 +116,20 @@ class SQLiteProjectStore:
         except sqlite3.Error as exc:
             raise ProjectStoreError("Unable to delete the project.") from exc
 
+    def delete_report_jobs(self, report_id: UUID) -> None:
+        """Remove persisted background jobs belonging to a deleted report."""
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    "DELETE FROM report_jobs WHERE payload LIKE ?",
+                    (f'%"report_id":"{report_id}"%',),
+                )
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc).casefold():
+                raise ProjectStoreError("Unable to clean report job records.") from exc
+        except sqlite3.Error as exc:
+            raise ProjectStoreError("Unable to clean report job records.") from exc
+
     def metadata_value(self, key: str) -> str | None:
         try:
             with closing(self._connect()) as connection:

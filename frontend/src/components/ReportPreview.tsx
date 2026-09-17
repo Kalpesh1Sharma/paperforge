@@ -1,15 +1,16 @@
 import { useEffect, useState } from "react";
 import { ExternalIcon, RefreshIcon } from "./Icons";
 
-type Props = { reportId: string; anchor: string | null; title: string };
+type Props = { reportId: string; anchor: string | null; title: string; artifactRevision?: number };
 
-export function ReportPreview({ reportId, anchor, title }: Props) {
+export function ReportPreview({ reportId, anchor, title, artifactRevision = 0 }: Props) {
   const base = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "http://127.0.0.1:8000";
   const htmlUrl = `${base}/reports/${reportId}/html`;
   const [revision, setRevision] = useState(0);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
-  const src = `${htmlUrl}${anchor ? `#${encodeURIComponent(anchor)}` : ""}`;
+  const versionedUrl = artifactRevision > 1 ? `${htmlUrl}?revision=${artifactRevision}` : htmlUrl;
+  const src = `${versionedUrl}${anchor ? `#${encodeURIComponent(anchor)}` : ""}`;
 
   useEffect(() => { setLoading(true); setFailed(false); }, [src, revision]);
 

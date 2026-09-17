@@ -19,7 +19,7 @@ PaperForge treats the report as a grounded, persisted publication rather than a 
 1. Upload one PDF or two to five ordered source PDFs.
 2. Parse and chunk each source independently.
 3. Extract structured knowledge and synthesize one grounded research report.
-4. Inspect reader-facing findings with source labels such as `sample_02_ranking_evaluation.pdf · excerpt 1`.
+4. Inspect reader-facing findings with source labels such as `sample_02_ranking_evaluation.pdf · p. 2`.
 5. Request one controlled Executive Summary editorial improvement.
 6. Review the exact before/after proposal and explicitly approve or reject it.
 7. Download a verified reviewed DOCX when the approved change is confirmed in the export.
@@ -37,7 +37,7 @@ A typical demonstrated flow is:
   → verified reviewed DOCX
 ```
 
-The original JSON, Markdown, HTML, and PDF report artifacts remain available and unchanged throughout this review stage. The human-reviewed artifact in v0.12 is a DOCX, not a reviewed PDF.
+The original JSON, Markdown, HTML, PDF, and editable DOCX artifacts remain available throughout this review stage. The optional SuperDocs workflow produces a separate human-reviewed DOCX.
 
 ## Architecture
 
@@ -50,11 +50,11 @@ flowchart LR
     E --> F[Document synthesis]
     F --> G[Report intelligence]
     G --> H[Immutable presentation model]
-    H --> I[HTML / Markdown / PDF]
+    H --> I[HTML / Markdown / PDF / DOCX]
     I --> J[SuperDocs review]
     J --> K[Human approve / reject]
     K --> L[Verified reviewed DOCX]
-    C -. filename + excerpt identity .-> H
+    C -. filename + PDF page identity .-> H
 ```
 
 The backend owns document processing, SQLite project persistence, report artifacts, and review orchestration. The React frontend consumes the API: it uploads PDFs, manages durable local projects, previews persisted report HTML in an iframe, displays source metadata, and presents the controlled review state. It does not recreate the report renderer or call AI providers or SuperDocs directly from the browser.
@@ -89,7 +89,7 @@ PaperForge never automatically approves a proposed edit. Each change is approved
 
 ```text
 SUPPORTED BY
-sample_02_ranking_evaluation.pdf · excerpt 1
+sample_02_ranking_evaluation.pdf · p. 2
 ```
 
 These labels come from actual document filenames and chunk order. They let a reader follow a report finding back to its supporting source excerpt without exposing internal UUIDs in the publication.
@@ -120,13 +120,23 @@ The React interface presents PaperForge as one coherent research product:
 - The dashboard shows searchable recent projects; the dedicated Projects screen supports opening, renaming, and removing workspace records.
 - Existing completed report folders are indexed into the project database automatically on first startup.
 - Project storage contains report identifiers and display metadata only; source PDF contents and credentials are never placed in browser storage.
-- A seven-step new-report wizard collects project information, up to five ordered PDFs, report structure, visual-template direction, publication details, a final review, and explicit generation.
-- Professional, Executive, Technical, and Full selections use the corresponding real composition budgets; visual-template cards remain explicit Phase 1 placeholders until the Phase 2 renderer work.
-- Project name, research domain, report title, author, organisation, structure, and template choice are validated by the backend and persisted with report metadata.
+- A seven-step new-report wizard collects project information, audience and purpose, up to five ordered PDFs, report structure, writing tone, citation policy, visual direction, institutional publication details, a final review, and explicit generation.
+- Phase 2 settings use a versioned contract that keeps report structure, content direction, visual theme, citation style, and publication metadata independent. Existing Phase 1 flat settings are migrated automatically when loaded.
+- Three production report formats are available: Classic Academic, Modern Research, and IEEE-Inspired Technical. Each has a dedicated screen and print stylesheet while legacy template identifiers remain readable.
+- Before generation, PaperForge scans the selected PDFs and saves an evidence-aware outline proposal. Users can rename, reorder, remove, or add sections; the backend permits generation only for the exact approved revision.
+- Professional, Executive, Technical, and Full presets select ordered section sets and real composition budgets. Section headings and order are now data, rather than renderer assumptions.
+- Title, subtitle, author, organisation, university, department, publication type, research domain, audience, tone, citation style, structure, and theme are validated by the backend and persisted with report metadata.
 - Report generation runs as a persistent background job with real parsing, chunking, extraction, synthesis, review, composition, and rendering stages.
 - The processing page polls durable SQLite progress, permits navigation elsewhere, and restores the active job from its URL or browser marker after a reload.
 - Provider exhaustion, invalid documents, and storage failures become clear terminal job states rather than leaving the interface blocked on an HTTP request.
 - The report workspace provides a real document outline, anchored section navigation, a reloadable publication preview, source inspection, evidence confidence, export controls, version metadata, and controlled SuperDocs review.
+- The report editor persists direct section edits, offers bounded rewrite/shorten/expand actions through the configured provider failover chain, and lets approved sections be locked against accidental changes.
+- Classic Academic, Modern Research, and IEEE-Inspired Technical can be switched after generation. PaperForge rerenders HTML, Markdown, and PDF from the same saved content model without rereading sources or regenerating prose.
+- PDF parsing retains one-based page spans through chunking, so inline evidence can identify a page or page range instead of only an excerpt number.
+- APA, IEEE, Harvard, and source-linked citation projections are independent from report content. Bibliographies are deduplicated by source document.
+- Every saved presentation includes deterministic unsupported-claim, empty-section, bibliography, and formatting checks shown in the report workspace.
+- A normal editable DOCX is generated with every report and refreshed after section edits or template changes; the reviewed SuperDocs DOCX remains a separate artifact.
+- Permanently deleting a completed project removes its SQLite record, persisted job records, uploaded sources, and generated report directory.
 - Safe regeneration reuses the persisted source PDFs and wizard settings to create a new background report job while leaving the current report unchanged.
 - Job-status polling uses a lightweight SQLite reader, so checking progress does not repeatedly initialize configured AI providers.
 - Existing report URLs still restore metadata and review state through GET-only recovery.
@@ -148,15 +158,21 @@ Provider-supplied `old_html` and `new_html` are never injected into the React tr
 | `POST` | `/reports` | Upload one PDF and create a report, optionally with JSON wizard settings in the multipart `settings` field. |
 | `POST` | `/reports/multi` | Upload two to five ordered PDFs and create one report, optionally with JSON wizard settings. |
 | `GET` | `/reports/{report_id}` | Retrieve the persisted presentation model. |
+| `GET` | `/reports/{report_id}/editing` | Retrieve editable section text, locks, template and revision. |
+| `PATCH` | `/reports/{report_id}/sections/{section_key}` | Save user-edited section prose and rerender report exports. |
+| `POST` | `/reports/{report_id}/sections/{section_key}/transform` | Rewrite, shorten or expand one unlocked section. |
+| `PATCH` | `/reports/{report_id}/sections/{section_key}/lock` | Lock or unlock one approved section. |
+| `PATCH` | `/reports/{report_id}/template` | Switch among the three Phase 2 formats without regenerating content. |
 | `GET` | `/reports/{report_id}/html` | Retrieve standalone report HTML. |
 | `GET` | `/reports/{report_id}/pdf` | Retrieve the original publication PDF. |
 | `GET` | `/reports/{report_id}/markdown` | Retrieve report Markdown. |
+| `GET` | `/reports/{report_id}/editable-docx` | Retrieve the normal locally generated editable Word document. |
 | `GET` | `/reports/{report_id}/metadata` | Retrieve source and generation metadata. |
 | `POST` | `/reports/{report_id}/review` | Start or safely recover a controlled review. |
 | `GET` | `/reports/{report_id}/review` | Retrieve persisted local review state only. |
 | `POST` | `/reports/{report_id}/review/approve` | Approve one pending change. |
 | `POST` | `/reports/{report_id}/review/reject` | Reject one pending change, optionally with feedback. |
-| `GET` | `/reports/{report_id}/docx` | Retrieve a verified reviewed DOCX when available. |
+| `GET` | `/reports/{report_id}/docx` | Retrieve the separate verified SuperDocs-reviewed DOCX when available. |
 
 Interactive API documentation is available locally at `http://127.0.0.1:8000/docs`.
 
@@ -169,7 +185,8 @@ Interactive API documentation is available locally at `http://127.0.0.1:8000/doc
 - Ordered BYOK providers (Gemini, Mistral, Groq, or a generic OpenAI-compatible endpoint) with deterministic fallback
 - Playwright for professional publication-style PDF rendering
 - httpx for the narrow SuperDocs client
-- Python standard-library ZIP/XML inspection for post-export DOCX verification
+- python-docx for normal editable Word exports
+- Python standard-library ZIP/XML inspection for post-review DOCX verification
 
 **Frontend**
 
@@ -179,6 +196,7 @@ Interactive API documentation is available locally at `http://127.0.0.1:8000/doc
 
 **Editing and review**
 
+- Native persisted section editing, assisted section transforms and approval locks
 - SuperDocs API, with explicit per-change human approval
 
 ## Getting started
@@ -299,7 +317,7 @@ cd backend
 python -m pytest tests -q --basetemp .pytest-final
 ```
 
-The verified backend suite currently has **290 passing tests**.
+The verified backend suite currently has **326 passing tests**. The frontend suite has **11 passing tests**.
 
 Frontend validation:
 
@@ -318,10 +336,11 @@ Frontend typecheck, tests, and production build pass locally.
 - **v0.10** — grounded multi-document reports
 - **v0.11** — SuperDocs human review and verified DOCX export
 - **v0.12** — demo-ready React product UI and URL-based workspace recovery
+- **Phase 2** — configurable formats, outline approval, editing, page-aware citations, quality checks, editable DOCX, and deployable Docker workflow
 
 ## Current scope
 
-v0.12 intentionally focuses on the research-to-reviewed-document workflow. Its SQLite project and job databases are local single-workspace stores, and background work runs inside the API process rather than a distributed worker queue. It does not currently include authentication, user accounts, multi-user history, billing, cloud deployment, arbitrary document chat, or reviewed PDF generation. These are deliberate scope boundaries, not claims of production deployment.
+The current release intentionally focuses on a single-workspace research-to-document workflow. Its SQLite project and job databases are local stores, and background work runs inside the API process rather than a distributed worker queue. It does not include authentication, multi-user history, billing, horizontally scaled deployment, arbitrary document chat, or reviewed PDF generation. These are deliberate scope boundaries.
 
 ## Repository structure
 
@@ -350,4 +369,4 @@ examples/
 
 ## Final status
 
-**v0.12.0 — demo-ready prototype.** The end-to-end workflow has been validated locally: source PDFs become a grounded report, source provenance remains visible, consequential edits require explicit human review, and the final reviewed DOCX is verified before it is offered for download.
+**Phase 2 complete — professional report prototype.** Source PDFs become configurable grounded reports with page-aware citations, quality feedback, three publication formats, normal editable DOCX export, optional controlled review, and a documented single-instance Docker deployment path.

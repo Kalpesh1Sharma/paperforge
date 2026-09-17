@@ -159,6 +159,11 @@ class MarkdownRenderer:
             )
             for section in presentation.sections
         )
+        if presentation.bibliography:
+            blocks.append(
+                "## Bibliography\n\n"
+                + "\n".join(entry.citation for entry in presentation.bibliography)
+            )
         return "\n\n".join(block.rstrip("\n") for block in blocks) + "\n"
 
     @classmethod
@@ -174,8 +179,9 @@ class MarkdownRenderer:
         return "\n".join(
             (
                 f"# {cover.title}",
+                *((f"\n_{cover.subtitle}_",) if cover.subtitle is not None else ()),
                 "",
-                f"*PaperForge Research Report - {_PUBLICATION_VERSION}*",
+                f"*PaperForge {cover.publication_type or 'Research Report'} - {_PUBLICATION_VERSION}*",
                 "",
                 f"Prepared from document: **{prepared_from}**  ",
                 f"Prepared by {cover.author or 'PaperForge'}",
@@ -184,11 +190,14 @@ class MarkdownRenderer:
                     if cover.organisation is not None
                     else ()
                 ),
+                *((f"University: {cover.university}",) if cover.university is not None else ()),
+                *((f"Department: {cover.department}",) if cover.department is not None else ()),
                 "",
                 "| Publication detail | Value |",
                 "| --- | --- |",
                 f"| Research domain | {cover.domain} |",
                 f"| Generated | {generated_on} |",
+                f"| Citation style | {presentation.citation_style.upper()} |",
             )
         )
 
@@ -217,6 +226,10 @@ class MarkdownRenderer:
     ) -> str:
         """Render one immutable section in the model's supplied order."""
         blocks: list[str] = [f"## {section.heading}"]
+
+        if section.edited_content is not None:
+            blocks.append(section.edited_content)
+            return "\n\n".join(blocks)
 
         if section.key == "document-overview":
             blocks.extend(section.intro[:1])

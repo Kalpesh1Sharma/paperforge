@@ -13,6 +13,7 @@ from app.reports.exceptions import (
     ReportRenderingError,
 )
 from app.reports.presentation_models import PresentationModel
+from app.reports.template_registry import get_report_template
 from app.reports.template_loader import get_html_template, load_html_asset
 
 _SUMMARY_PARAGRAPH_SEPARATOR = re.compile(r"\r?\n[ \t]*(?:\r?\n)+")
@@ -39,11 +40,14 @@ class HTMLRenderer:
         self._validate_presentation_model(presentation)
 
         try:
+            report_template = get_report_template(presentation.template_key)
             rendered_html = get_html_template("report.html.j2").render(
                 presentation=presentation,
                 publication_version=f"v{settings.app_version}",
                 css=load_html_asset("report.css"),
                 print_css=load_html_asset("print.css"),
+                theme_css=load_html_asset(report_template.asset),
+                template_name=report_template.name,
                 empty_state=_EMPTY_STATE,
             )
         except InvalidResearchReportError:

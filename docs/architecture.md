@@ -128,19 +128,47 @@ Prepares the document for SuperDocs.
 
 ---
 
-# Report Structure
+# Configurable Report Contract
 
-The generated report follows a consistent format.
+Report generation uses a versioned configuration with five independent parts:
 
-- Executive Summary
-- Background
-- Key Findings
-- Insights
-- Risks
-- Open Questions
-- References
+- `report_structure`: preset plus an ordered list of enabled section keys and headings
+- `content`: writing tone, intended audience and language
+- `visual_theme`: template, page size, density and optional accent colour
+- `citations`: citation style and bibliography policy
+- `publication`: title, subtitle, author and institutional metadata
 
-This structure can later support templates for different report types.
+The composer still materializes typed evidence-aware section payloads, while the
+service projects those payloads into the user-selected order and headings. HTML,
+Markdown, PDF, and editable DOCX renderers consume the same immutable presentation model. This
+lets later phases edit an outline or switch a theme without changing evidence or
+regenerating report content.
+
+Stored Phase 1 settings are upgraded to schema version 2 at the model boundary,
+so existing projects and regeneration continue to work.
+
+## Citation and quality projection
+
+The PDF parser records one-based page character spans. Chunking projects those
+spans into `page_number` and `page_end_number` metadata without changing chunk
+text or identifiers. Citation formatting is a renderer-facing projection:
+APA, IEEE, Harvard, and source-linked labels all retain the same raw chunk UUIDs.
+Bibliography entries are deduplicated by source document.
+
+A deterministic quality pass runs before artifacts are persisted and again
+after report edits. It records support coverage and actionable issues in the
+presentation model; it never invents evidence or rewrites report prose.
+
+## Export and local cleanup
+
+The HTML renderer remains the visual source for PDF output. A separate
+`EditableDocxRenderer` creates a standard Word document with editable headings,
+paragraphs, tables, provenance, bibliography, and page fields. SuperDocs review
+continues to produce a separate reviewed DOCX.
+
+Deleting a ready project removes its project row, related job rows, saved source
+files, and generated artifact directory. Docker Compose mounts report storage at
+`/data/reports`, keeping SQLite state and artifacts in one persistent volume.
 
 ---
 

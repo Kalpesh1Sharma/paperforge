@@ -6,6 +6,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.reports import ReportGenerationSettings
+from app.reports.generation_settings import VisualTemplate
+from app.reports.presentation_models import PresentationSectionKey
+
 class ApiError(BaseModel):
     """One sanitized API error suitable for clients and logs."""
 
@@ -62,21 +66,8 @@ class ReportGenerationMetadata(BaseModel):
     reason: str | None = None
 
 
-class ReportWizardSettingsMetadata(BaseModel):
-    """Safe persisted wizard selections returned with report metadata."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    project_title: str
-    research_domain: str
-    purpose: str | None = None
-    structure: Literal["professional", "executive", "technical", "full"]
-    visual_template: Literal[
-        "paperforge-classic", "modern-research", "editorial", "minimal"
-    ]
-    report_title: str
-    author: str
-    organisation: str | None = None
+class ReportWizardSettingsMetadata(ReportGenerationSettings):
+    """Canonical safe persisted settings returned with report metadata."""
 
 
 class ReportCreatedResponse(BaseModel):
@@ -86,7 +77,7 @@ class ReportCreatedResponse(BaseModel):
 
     report_id: UUID
     status: Literal["completed"] = "completed"
-    available_formats: tuple[Literal["json", "html", "markdown", "pdf"], ...]
+    available_formats: tuple[Literal["json", "html", "markdown", "pdf", "docx"], ...]
     metadata: ReportDocumentMetadata
 
 
@@ -97,7 +88,7 @@ class MultiReportCreatedResponse(BaseModel):
 
     report_id: UUID
     status: Literal["completed"] = "completed"
-    available_formats: tuple[Literal["json", "html", "markdown", "pdf"], ...]
+    available_formats: tuple[Literal["json", "html", "markdown", "pdf", "docx"], ...]
     documents: tuple[ReportDocumentMetadata, ...] = Field(min_length=2, max_length=5)
 
 
@@ -108,7 +99,7 @@ class ReportMetadataResponse(BaseModel):
 
     report_id: UUID
     status: Literal["completed"] = "completed"
-    available_formats: tuple[Literal["json", "html", "markdown", "pdf"], ...]
+    available_formats: tuple[Literal["json", "html", "markdown", "pdf", "docx"], ...]
     document: ReportDocumentMetadata | None = None
     documents: tuple[ReportDocumentMetadata, ...] | None = None
     generation: ReportGenerationMetadata
@@ -119,6 +110,34 @@ class ReportMetadataResponse(BaseModel):
         if (self.document is None) == (self.documents is None):
             raise ValueError("Metadata must contain exactly one source shape.")
         return self
+
+
+class EditableReportSectionResponse(BaseModel):
+    """One safe editable section buffer and approval state."""
+
+    model_config = ConfigDict(extra="forbid")
+    key: PresentationSectionKey
+    heading: str
+    content: str
+    locked: bool
+    edited: bool
+
+
+class ReportTransformMetadataResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["rewrite", "shorten", "expand"]
+    provider: str
+    fallback: bool
+
+
+class ReportEditingStateResponse(BaseModel):
+    """Current mutable editing state for an otherwise immutable report."""
+
+    model_config = ConfigDict(extra="forbid")
+    template_key: VisualTemplate
+    revision: int = Field(ge=1)
+    sections: tuple[EditableReportSectionResponse, ...] = Field(min_length=1)
+    last_transform: ReportTransformMetadataResponse | None = None
 
 
 class ReportJobErrorResponse(BaseModel):

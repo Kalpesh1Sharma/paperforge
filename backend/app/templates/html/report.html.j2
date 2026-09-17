@@ -11,8 +11,13 @@
   <style id="paperforge-print-styles" media="print">
 {{ print_css | safe }}
   </style>
+  <style id="paperforge-template-styles">
+{{ theme_css | safe }}
+{% if presentation.accent_color %}:root { --template-accent: {{ presentation.accent_color }}; }{% endif %}
+@media print { @page { size: {{ "Letter" if presentation.page_size == "letter" else "A4" }}; } }
+  </style>
 </head>
-<body class="publication-document template-{{ presentation.template_key }}">
+<body class="publication-document template-{{ presentation.template_key }} density-{{ presentation.content_density }} page-{{ presentation.page_size | lower }}" data-template-name="{{ template_name }}">
 {% macro evidence_details(evidence) -%}
 {% if evidence.confidence_label or evidence.source_labels or evidence.references %}
               <aside class="evidence-note" aria-label="Evidence and provenance">
@@ -36,9 +41,9 @@
     <header id="cover-page" class="cover-page" aria-labelledby="report-title">
       <div class="cover-rule" aria-hidden="true"></div>
       <p class="publication-mark">PaperForge {{ publication_version }}</p>
-      <p class="cover-kicker">Research report</p>
+      <p class="cover-kicker">{{ presentation.cover.publication_type or "Research report" }}</p>
       <h1 id="report-title">{{ presentation.cover.title }}</h1>
-      <p class="cover-deck">A technical research publication prepared for focused reading and evidence review.</p>
+      <p class="cover-deck">{{ presentation.cover.subtitle or "A technical research publication prepared for focused reading and evidence review." }}</p>
       <aside class="publication-metadata" aria-labelledby="publication-details-heading">
         <h2 id="publication-details-heading" class="metadata-heading">Publication details</h2>
         <dl>
@@ -46,11 +51,18 @@
 {% if presentation.cover.organisation %}
           <div><dt>Organisation</dt><dd>{{ presentation.cover.organisation }}</dd></div>
 {% endif %}
+{% if presentation.cover.university %}
+          <div><dt>University</dt><dd>{{ presentation.cover.university }}</dd></div>
+{% endif %}
+{% if presentation.cover.department %}
+          <div><dt>Department</dt><dd>{{ presentation.cover.department }}</dd></div>
+{% endif %}
           <div><dt>Prepared from</dt><dd>{{ presentation.cover.filename or "Not available" }}</dd></div>
           <div><dt>Research domain</dt><dd>{{ presentation.cover.domain }}</dd></div>
           <div><dt>Document type</dt><dd>{{ presentation.cover.file_type or "Not available" }}</dd></div>
           <div><dt>Total pages</dt><dd>{{ presentation.cover.page_count if presentation.cover.page_count is not none else "Not available" }}</dd></div>
           <div><dt>Generated</dt><dd>{% if presentation.cover.generated_on is not none %}<time datetime="{{ presentation.cover.generated_on.isoformat() }}">{{ presentation.cover.generated_on.isoformat() }}</time>{% else %}Not available{% endif %}</dd></div>
+          <div><dt>Citation style</dt><dd>{{ presentation.citation_style | upper }}</dd></div>
 {% if presentation.mode in ("technical", "full") %}
           <div><dt>Knowledge objects analyzed</dt><dd>{{ presentation.cover.knowledge_object_count }}</dd></div>
           <div><dt>Evidence sources</dt><dd>{{ presentation.cover.evidence_source_count }}</dd></div>
@@ -78,6 +90,15 @@
           </a>
         </li>
 {% endfor %}
+{% if presentation.bibliography %}
+        <li>
+          <a class="toc-link" href="#bibliography">
+            <span class="toc-title">Bibliography</span>
+            <span class="toc-leader" aria-hidden="true"></span>
+            <span class="toc-page-reference" data-target="#bibliography" aria-hidden="true"></span>
+          </a>
+        </li>
+{% endif %}
       </ol>
     </nav>
 
@@ -87,6 +108,9 @@
         <p class="section-label">Section {{ "%02d" | format(loop.index) }}</p>
         <h2 id="{{ section.anchor_id }}-heading">{{ section.heading }}</h2>
       </header>
+{% if section.edited_content is not none %}
+      <div class="section-prose section-prose--edited"><p>{{ section.edited_content }}</p></div>
+{% else %}
 {% if section.intro %}
       <div class="section-prose section-prose--{{ section.key }}">
 {% for paragraph in section.intro %}
@@ -280,8 +304,22 @@
 {% if not section.intro and not section.finding_groups and not section.entity_groups and not section.concepts and not section.timeline and not section.evidence_tables and not section.appendix_groups and not section.references %}
       <p class="empty-state" role="status">{{ empty_state }}</p>
 {% endif %}
+{% endif %}
     </section>
 {% endfor %}
+{% if presentation.bibliography %}
+    <section id="bibliography" class="publication-section publication-section--bibliography" aria-labelledby="bibliography-heading">
+      <header class="section-header">
+        <p class="section-label">Sources</p>
+        <h2 id="bibliography-heading">Bibliography</h2>
+      </header>
+      <ol class="bibliography-list">
+{% for entry in presentation.bibliography %}
+        <li>{{ entry.citation }}</li>
+{% endfor %}
+      </ol>
+    </section>
+{% endif %}
     <footer class="report-footer">
       <p>Prepared by {{ presentation.cover.author or "PaperForge" }}. Source labels identify evidence in the report's ordered provenance ledger.</p>
     </footer>

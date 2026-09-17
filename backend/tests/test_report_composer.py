@@ -241,6 +241,22 @@ def test_composer_caps_abstract_and_removes_duplicate_summary_paragraphs() -> No
     assert executive_summary == (long_summary,)
 
 
+def test_abstract_paraphrase_detection_removes_repeated_facts() -> None:
+    """Abstract curation treats close grammatical rewrites as one fact."""
+    first = (
+        "New Minecraft players are randomly assigned a default skin from a set "
+        "of nine options."
+    )
+    repeated = (
+        "When new players start in Minecraft, they are randomly assigned a "
+        "default skin chosen from nine available options."
+    )
+    different = "Custom skins are typically stored in PNG format."
+
+    assert ReportComposer._similar_abstract_sentence(first, repeated)
+    assert not ReportComposer._similar_abstract_sentence(first, different)
+
+
 def test_composer_preserves_intelligence_source_provenance() -> None:
     """Intelligence cards retain raw IDs internally and labels for renderers."""
     chunk_id = _CHUNK_IDS[0]
@@ -1071,3 +1087,22 @@ def test_multi_document_composition_balances_sources_and_uses_collection_cover_m
     assert cross_card.evidence.source_labels == (
         "beta.pdf · excerpt 1", "gamma.pdf · excerpt 1"
     )
+
+
+def test_single_document_summary_removes_sentences_repeated_by_abstract() -> None:
+    executive = (
+        "PaperForge organizes evidence for review. It also preserves source links.",
+    )
+    abstract = ("PaperForge organizes evidence for review.",)
+
+    result = ReportComposer._remove_abstract_repetition(executive, abstract)
+
+    assert result == ("It also preserves source links.",)
+
+
+def test_summary_deduplication_keeps_one_paragraph_when_everything_overlaps() -> None:
+    summary = ("PaperForge organizes evidence for review.",)
+
+    result = ReportComposer._remove_abstract_repetition(summary, summary)
+
+    assert result == summary

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, PaperForgeApiError } from "./api/client";
-import type { ReportJob, ReportMetadata, ReviewState, WizardSettings } from "./api/types";
+import type { OutlineProposal, ReportJob, ReportMetadata, ReportSectionSetting, ReviewState, WizardSettings } from "./api/types";
 import { AppShell } from "./components/AppShell";
 import { Dashboard } from "./components/Dashboard";
 import { LandingPage } from "./components/LandingPage";
@@ -205,6 +205,21 @@ export default function App() {
     setBusy(false);
   };
 
+  const proposeOutline = async (settings: WizardSettings): Promise<OutlineProposal | null> => {
+    if (!files.length) return null;
+    setBusy(true);
+    const proposal = await safe(() => api.proposeOutline(files, settings));
+    setBusy(false);
+    return proposal;
+  };
+
+  const approveOutline = async (id: string, sections: ReportSectionSetting[]): Promise<OutlineProposal | null> => {
+    setBusy(true);
+    const approved = await safe(() => api.approveOutline(id, sections));
+    setBusy(false);
+    return approved;
+  };
+
   const regenerate = async () => {
     if (!reportId) return;
     setBusy(true);
@@ -292,7 +307,7 @@ export default function App() {
       ) : route === "new" ? (
         <main className="new-report-page page-enter">
           <header className="page-header"><div><span className="page-kicker">NEW REPORT</span><h1>Build from evidence.</h1><p>Start with the documents you trust. You’ll review the structure before anything is published.</p></div><div className="draft-state"><span>Draft</span><small>Not saved</small></div></header>
-          <NewReportWizard files={files} onFilesChange={setFiles} onGenerate={generate} busy={busy} />
+          <NewReportWizard files={files} onFilesChange={setFiles} onProposeOutline={proposeOutline} onApproveOutline={approveOutline} onGenerate={generate} busy={busy} />
         </main>
       ) : reportId && metadata ? (
         <ReportWorkspace id={reportId} metadata={metadata} review={review} busy={busy} onStart={() => updateReview(() => api.startReview(reportId))} onApprove={(changeId) => updateReview(() => api.approve(reportId, changeId))} onReject={(changeId, feedback) => updateReview(() => api.reject(reportId, changeId, feedback))} onRefresh={() => updateReview(() => api.getReview(reportId))} onNewReport={startNewReport} onRegenerate={regenerate} onBack={() => navigate("/app/projects")} />

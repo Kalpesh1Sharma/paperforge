@@ -1163,7 +1163,12 @@ class ReportComposer:
         """Recognize a navigation cluster at the start of extracted web text."""
         if _BREADCRUMB_PATTERN.match(value):
             return True
-        leading_tokens = tuple(cls._content_tokens(value))[:10]
+        leading_tokens = tuple(
+            token
+            for raw_token in _TOKEN_PATTERN.findall(value)
+            if (token := cls._normalized_token(raw_token))
+            and token not in _STOP_TOKENS
+        )[:10]
         navigation_labels = {
             token for token in leading_tokens if token in _NAVIGATION_LABELS
         }
@@ -2463,6 +2468,11 @@ class ReportComposer:
             selected_cards + technical_cards,
             self._budget.abstract_word_limit,
         )
+        if not (cover.filename or "").endswith(" source documents"):
+            executive_summary = self._remove_abstract_repetition(
+                executive_summary,
+                abstract,
+            )
         publication_mode = self._mode in {ReportMode.PROFESSIONAL, ReportMode.EXECUTIVE}
         report_guide = () if publication_mode else self._report_guide_intro()
         overview = document_overview_intro(cover)
@@ -2749,7 +2759,8 @@ class ReportComposer:
                     continue
                 normalized = cls._normalized_text(sentence)
                 if not normalized or any(
-                    cls._similar_text(sentence, existing) for existing in sentences
+                    cls._similar_abstract_sentence(sentence, existing)
+                    for existing in sentences
                 ):
                     continue
                 sentence_words = sentence.split()
@@ -2764,6 +2775,69 @@ class ReportComposer:
             if word_limit is not None and words_used >= word_limit:
                 break
         return (" ".join(sentences),) if sentences else ()
+
+    @classmethod
+    def _similar_abstract_sentence(cls, left: str, right: str) -> bool:
+        """Detect close paraphrases without weakening global finding curation."""
+        if cls._similar_text(left, right):
+            return True
+        left_tokens = cls._abstract_comparison_tokens(left)
+        right_tokens = cls._abstract_comparison_tokens(right)
+        if not left_tokens or not right_tokens:
+            return False
+        shared = len(left_tokens.intersection(right_tokens))
+        smaller = min(len(left_tokens), len(right_tokens))
+        union = len(left_tokens.union(right_tokens))
+        return shared >= 4 and shared / smaller >= 0.72 and shared / union >= 0.5
+
+    @classmethod
+    def _remove_abstract_repetition(
+        cls,
+        executive_summary: tuple[str, ...],
+        abstract: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Keep the executive summary useful without repeating the abstract."""
+        abstract_sentences = tuple(
+            sentence
+            for paragraph in abstract
+            for sentence in cls._sentences(paragraph)
+        )
+        if not abstract_sentences:
+            return executive_summary
+        distinct: list[str] = []
+        for paragraph in executive_summary:
+            sentences = tuple(
+                sentence
+                for sentence in cls._sentences(paragraph)
+                if not any(
+                    cls._similar_abstract_sentence(sentence, abstract_sentence)
+                    for abstract_sentence in abstract_sentences
+                )
+            )
+            if sentences:
+                distinct.append(" ".join(sentences))
+        # Some very short documents contain no additional summary material.
+        # Retain one paragraph rather than rendering a misleading empty section.
+        return tuple(distinct) or executive_summary[-1:]
+
+    @classmethod
+    def _abstract_comparison_tokens(cls, value: str) -> frozenset[str]:
+        """Return lightly stemmed content tokens for abstract-only comparison."""
+        stems: set[str] = set()
+        for token in cls._content_tokens(value):
+            stem = token
+            if len(stem) > 5 and stem.endswith("ies"):
+                stem = stem[:-3] + "y"
+            elif len(stem) > 5 and stem.endswith("ing"):
+                stem = stem[:-3]
+            elif len(stem) > 4 and stem.endswith("ed"):
+                stem = stem[:-2]
+            elif len(stem) > 4 and stem.endswith("s"):
+                stem = stem[:-1]
+            if len(stem) > 5 and stem.endswith("e"):
+                stem = stem[:-1]
+            stems.add(stem)
+        return frozenset(stems)
 
     @classmethod
     def _executive_summary_paragraphs(

@@ -1,0 +1,38 @@
+:root { --template-accent: #315ee8; }
+.template-modern-research,
+.template-minimal {
+  --ink: #10213b;
+  --accent: var(--template-accent);
+  --accent-soft: #eef3ff;
+  --forest: var(--template-accent);
+  --forest-deep: #10213b;
+  --forest-soft: #eef3ff;
+  --ochre: #e08a22;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+.template-modern-research h1,
+.template-modern-research h2,
+.template-modern-research h3,
+.template-minimal h1,
+.template-minimal h2,
+.template-minimal h3 { font-family: Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: -.025em; }
+.template-modern-research .cover-page,
+.template-minimal .cover-page { background: linear-gradient(145deg, #f7f9ff 0 36%, #fff 36%); border-block-start: .45rem solid var(--accent); }
+.template-modern-research .cover-rule,
+.template-minimal .cover-rule { inline-size: 3.25rem; block-size: .5rem; border-radius: 999px; background: var(--accent); }
+.template-modern-research .section-header,
+.template-minimal .section-header { border-block-end: 2px solid var(--accent); padding-block-end: .6rem; }
+.template-modern-research .section-label,
+.template-minimal .section-label { color: var(--accent); }
+.template-modern-research .insight,
+.template-modern-research .concept,
+.template-minimal .insight,
+.template-minimal .concept { border: 1px solid #dfe6f5; border-radius: .45rem; padding: 1rem; background: #fff; }
+.template-modern-research .evidence-note,
+.template-minimal .evidence-note { border-inline-start-color: var(--accent); background: var(--accent-soft); }
+@media print {
+  .template-modern-research .cover-page,
+  .template-minimal .cover-page { background: linear-gradient(145deg, #f7f9ff 0 36%, #fff 36%) !important; }
+  .template-modern-research .cover-page h1,
+  .template-minimal .cover-page h1 { font-size: 36pt; max-inline-size: 150mm; }
+}

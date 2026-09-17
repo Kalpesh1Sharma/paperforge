@@ -55,6 +55,13 @@ def test_pdf_parser_extracts_pages_and_metadata(tmp_path: Path) -> None:
     assert parsed.metadata["author"] == "PaperForge"
     assert parsed.word_count == len(parsed.extracted_text.split())
     assert parsed.character_count == len(parsed.extracted_text)
+    assert [page.page_number for page in parsed.pages] == [1, 2]
+    assert parsed.extracted_text[
+        parsed.pages[0].start_char : parsed.pages[0].end_char
+    ].strip() == "Introduction"
+    assert parsed.extracted_text[
+        parsed.pages[1].start_char : parsed.pages[1].end_char
+    ].strip() == "Findings"
 
 
 def test_docx_parser_extracts_body_text_and_metadata(tmp_path: Path) -> None:
