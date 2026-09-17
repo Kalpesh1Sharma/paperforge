@@ -10,19 +10,27 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 
 from app.api.dependencies import (
     get_paperforge_service,
+    get_outline_service,
     get_report_job_reader,
     get_report_job_service,
     get_review_service,
 )
 from app.jobs import ReportJobReader, ReportJobRecord, ReportJobService
+from app.outlines import OutlineProposal, OutlineService
 from app.schemas import (
     ApiErrorResponse,
+    ApproveOutlineRequest,
+    EditReportSectionRequest,
     MultiReportCreatedResponse,
     ReportCreatedResponse,
+    ReportEditingStateResponse,
     ReportJobResponse,
     ReportMetadataResponse,
     ReviewDecisionRequest,
     ReviewStateResponse,
+    SetReportSectionLockRequest,
+    SwitchReportTemplateRequest,
+    TransformReportSectionRequest,
 )
 from app.services.report_service import (
     GeneratedMultiReport,
@@ -48,6 +56,13 @@ def _generation_settings(value: str | None) -> ReportGenerationSettings | None:
         raise InvalidReportUploadError(
             "The report configuration is incomplete or invalid."
         ) from exc
+
+
+def _required_generation_settings(value: str) -> ReportGenerationSettings:
+    configuration = _generation_settings(value)
+    if configuration is None:  # Defensive guard for future parser changes.
+        raise InvalidReportUploadError("Report configuration is required.")
+    return configuration
 
 _ERROR_RESPONSES = {
     400: {"model": ApiErrorResponse, "description": "Invalid upload or PDF."},
@@ -145,6 +160,42 @@ def _job_response(job: ReportJobRecord) -> ReportJobResponse:
 
 
 @router.post(
+    "/outlines",
+    response_model=OutlineProposal,
+    status_code=status.HTTP_201_CREATED,
+    responses=_ERROR_RESPONSES,
+    summary="Propose an evidence-aware editable report outline",
+)
+async def create_outline(
+    files: Annotated[
+        list[UploadFile],
+        File(description="Ordered PDFs to scan for outline evidence."),
+    ],
+    outline_service: Annotated[OutlineService, Depends(get_outline_service)],
+    settings: Annotated[str, Form(description="JSON report wizard settings.")],
+) -> OutlineProposal:
+    try:
+        return await outline_service.create(files, _required_generation_settings(settings))
+    finally:
+        for file in files:
+            await file.close()
+
+
+@router.post(
+    "/outlines/{proposal_id}/approve",
+    response_model=OutlineProposal,
+    responses=_ERROR_RESPONSES,
+    summary="Persist explicit approval of an edited report outline",
+)
+def approve_outline(
+    proposal_id: UUID,
+    request: ApproveOutlineRequest,
+    outline_service: Annotated[OutlineService, Depends(get_outline_service)],
+) -> OutlineProposal:
+    return outline_service.approve(proposal_id, request.sections)
+
+
+@router.post(
     "/jobs",
     response_model=ReportJobResponse,
     status_code=status.HTTP_202_ACCEPTED,
@@ -158,13 +209,16 @@ async def create_report_job(
         File(description="Research PDF to process.", media_type="application/pdf"),
     ],
     service: Annotated[ReportJobService, Depends(get_report_job_service)],
+    outline_service: Annotated[OutlineService, Depends(get_outline_service)],
     settings: Annotated[
         str | None, Form(description="JSON report wizard settings.")
     ] = None,
 ) -> ReportJobResponse:
     """Persist the upload, return promptly, and generate outside the request."""
     try:
-        job = await service.submit_report(file, _generation_settings(settings))
+        configuration = _generation_settings(settings)
+        outline_service.assert_generation_allowed(configuration)
+        job = await service.submit_report(file, configuration)
         background_tasks.add_task(service.run, job.job_id)
         return _job_response(job)
     finally:
@@ -189,13 +243,16 @@ async def create_multi_report_job(
         ),
     ],
     service: Annotated[ReportJobService, Depends(get_report_job_service)],
+    outline_service: Annotated[OutlineService, Depends(get_outline_service)],
     settings: Annotated[
         str | None, Form(description="JSON report wizard settings.")
     ] = None,
 ) -> ReportJobResponse:
     """Persist every source before request-owned upload handles are closed."""
     try:
-        job = await service.submit_multi_report(files, _generation_settings(settings))
+        configuration = _generation_settings(settings)
+        outline_service.assert_generation_allowed(configuration)
+        job = await service.submit_multi_report(files, configuration)
         background_tasks.add_task(service.run, job.job_id)
         return _job_response(job)
     finally:
@@ -255,11 +312,13 @@ async def create_report(
         ),
     ],
     service: Annotated[PaperForgeService, Depends(get_paperforge_service)],
+    outline_service: Annotated[OutlineService, Depends(get_outline_service)],
     settings: Annotated[str | None, Form(description="JSON report wizard settings.")] = None,
 ) -> ReportCreatedResponse:
     """Store one multipart PDF and invoke the service boundary exactly once."""
     try:
         configuration = _generation_settings(settings)
+        outline_service.assert_generation_allowed(configuration)
         result = (
             await service.create_report(file)
             if configuration is None
@@ -287,11 +346,13 @@ async def create_multi_report(
         ),
     ],
     service: Annotated[PaperForgeService, Depends(get_paperforge_service)],
+    outline_service: Annotated[OutlineService, Depends(get_outline_service)],
     settings: Annotated[str | None, Form(description="JSON report wizard settings.")] = None,
 ) -> MultiReportCreatedResponse:
     """Store ordered PDFs and execute the single combined pipeline once."""
     try:
         configuration = _generation_settings(settings)
+        outline_service.assert_generation_allowed(configuration)
         result = (
             await service.create_multi_report(files)
             if configuration is None
@@ -368,6 +429,24 @@ async def reject_review_change(
 
 
 @router.get(
+    "/{report_id}/editable-docx",
+    response_class=FileResponse,
+    responses=_ERROR_RESPONSES,
+    summary="Retrieve the locally generated editable DOCX",
+)
+def get_editable_docx(
+    report_id: UUID,
+    service: Annotated[PaperForgeService, Depends(get_paperforge_service)],
+) -> FileResponse:
+    """Stream the persisted editable Word export without external review."""
+    return FileResponse(
+        path=service.docx_path(report_id),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=f"paperforge-{report_id}.docx",
+    )
+
+
+@router.get(
     "/{report_id}/docx",
     response_class=FileResponse,
     responses=_REVIEW_ERROR_RESPONSES,
@@ -431,6 +510,86 @@ def get_markdown_report(
     return PlainTextResponse(
         content=service.markdown(report_id),
         media_type="text/markdown",
+    )
+
+
+@router.get(
+    "/{report_id}/editing",
+    response_model=ReportEditingStateResponse,
+    responses=_REVIEW_ERROR_RESPONSES,
+    summary="Retrieve editable section buffers and locks",
+)
+def get_report_editing_state(
+    report_id: UUID,
+    service: Annotated[PaperForgeService, Depends(get_paperforge_service)],
+) -> ReportEditingStateResponse:
+    return ReportEditingStateResponse.model_validate(service.editing_state(report_id))
+
+
+@router.patch(
+    "/{report_id}/sections/{section_key}",
+    response_model=ReportEditingStateResponse,
+    responses=_REVIEW_ERROR_RESPONSES,
+    summary="Save one edited report section",
+)
+def edit_report_section(
+    report_id: UUID,
+    section_key: str,
+    request: EditReportSectionRequest,
+    service: Annotated[PaperForgeService, Depends(get_paperforge_service)],
+) -> ReportEditingStateResponse:
+    return ReportEditingStateResponse.model_validate(
+        service.update_section(report_id, section_key, request.content)
+    )
+
+
+@router.post(
+    "/{report_id}/sections/{section_key}/transform",
+    response_model=ReportEditingStateResponse,
+    responses=_REVIEW_ERROR_RESPONSES,
+    summary="Rewrite, shorten, or expand one report section",
+)
+def transform_report_section(
+    report_id: UUID,
+    section_key: str,
+    request: TransformReportSectionRequest,
+    service: Annotated[PaperForgeService, Depends(get_paperforge_service)],
+) -> ReportEditingStateResponse:
+    return ReportEditingStateResponse.model_validate(
+        service.transform_section(report_id, section_key, request.action)
+    )
+
+
+@router.patch(
+    "/{report_id}/sections/{section_key}/lock",
+    response_model=ReportEditingStateResponse,
+    responses=_REVIEW_ERROR_RESPONSES,
+    summary="Lock or unlock one approved report section",
+)
+def set_report_section_lock(
+    report_id: UUID,
+    section_key: str,
+    request: SetReportSectionLockRequest,
+    service: Annotated[PaperForgeService, Depends(get_paperforge_service)],
+) -> ReportEditingStateResponse:
+    return ReportEditingStateResponse.model_validate(
+        service.set_section_lock(report_id, section_key, request.locked)
+    )
+
+
+@router.patch(
+    "/{report_id}/template",
+    response_model=ReportEditingStateResponse,
+    responses=_ERROR_RESPONSES,
+    summary="Switch visual template without regenerating content",
+)
+def switch_report_template(
+    report_id: UUID,
+    request: SwitchReportTemplateRequest,
+    service: Annotated[PaperForgeService, Depends(get_paperforge_service)],
+) -> ReportEditingStateResponse:
+    return ReportEditingStateResponse.model_validate(
+        service.switch_template(report_id, request.template)
     )
 
 

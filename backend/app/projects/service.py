@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -86,12 +87,24 @@ class ProjectService:
         return self.get(project_id)
 
     def delete(self, project_id: UUID) -> None:
+        record = self.get(project_id)
         try:
             deleted = self._store.delete(project_id)
+            if deleted and record.report_id is not None:
+                self._store.delete_report_jobs(record.report_id)
         except ProjectStoreError as exc:
             raise ProjectStorageError("The project could not be deleted.") from exc
         if not deleted:
             raise ProjectNotFoundError("Project was not found.")
+        if record.report_id is not None:
+            report_directory = self._report_root / str(record.report_id)
+            try:
+                if report_directory.is_dir():
+                    shutil.rmtree(report_directory)
+            except OSError as exc:
+                raise ProjectStorageError(
+                    "The project record was deleted, but its report files could not be cleaned up."
+                ) from exc
 
     def attach_report(
         self,

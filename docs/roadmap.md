@@ -65,37 +65,65 @@ Development is organized into iterative phases, with each phase delivering a com
 
 ---
 
-# Phase 2 — Interactive Research
+# Phase 2 — Professional Templates and Polished Reports
 
-**Goal:** Transform PaperForge into an AI research assistant rather than a one-shot generator.
+**Goal:** Make report content, structure and visual presentation independently configurable.
 
-## SuperDocs MCP
+## Batch 6 — Configurable report model (implemented)
 
-- MCP integration
-- Interactive document editing
-- Section-level rewriting
-- Formatting preservation
+- Versioned schema-v2 report settings
+- Independent structure, content, visual theme, citation and publication models
+- Configurable ordered sections and headings
+- Title, subtitle, author, organisation, university, department and publication type
+- Automatic migration for Phase 1 settings and reports
 
-## AI Improvements
+## Batch 7 — Three initial formats
 
-- Citation extraction
-- Source tracking
-- Fact confidence scoring
-- Better summarization
+**Status: complete.** Classic Academic, Modern Research, and IEEE-Inspired
+Technical now use separate render assets and produce distinct HTML/PDF layouts.
 
-## Documents
+- Classic Academic
+- Modern Research
+- IEEE-Inspired Technical
 
-- OCR support
-- Images
-- HTML
-- Web URLs
+## Batch 8 — Outline approval
 
-## User Experience
+**Status: complete.** PDF evidence is scanned before generation, proposals are
+persisted, evidence availability is shown per section, and edited section order
+and headings must receive explicit revision-bound approval before generation.
 
-- Report preview
-- Editing history
-- Progress timeline
-- Error reporting
+- Proposed sections and evidence availability
+- Add, remove, rename and reorder before generation
+
+## Batch 9 — Editing
+
+**Status: complete.** Saved presentation sections now have editable prose and
+approval locks, assisted transforms use the configured provider chain with a
+deterministic fallback, and all three professional formats can be switched by
+rerendering the same revisioned content model.
+
+- Section editing, targeted rewrites and locks
+- Template switching without content regeneration
+
+## Batch 10 — Citations and quality checks
+
+**Status: complete.** PDF page positions now survive parsing and chunking,
+source evidence supports APA/IEEE/Harvard/source-linked display with a managed
+bibliography, and persisted quality results identify unsupported claims,
+empty sections, missing bibliography entries, and formatting risks.
+
+- Page-preserving citations, APA, IEEE and Harvard bibliography formatting
+- Unsupported-claim, missing-section and formatting checks
+
+## Batch 11 — Export and deployment
+
+**Status: complete.** Each report now includes a normal editable DOCX alongside
+the polished PDF, project deletion removes associated local artifacts and job
+records, and the repository includes production-style backend/frontend Docker
+images, Compose orchestration, a keyless demo profile, and deployment guidance.
+
+- Polished PDF and editable DOCX
+- Docker, cleanup, deployment and public demo workflow
 
 ---
 

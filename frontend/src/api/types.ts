@@ -2,14 +2,26 @@ export type DocumentMetadata = { filename: string; file_type: string; page_count
 export type CreationResponse = { report_id: string; status: "completed"; available_formats: string[]; metadata?: DocumentMetadata; documents?: DocumentMetadata[] };
 export type ReportJobStage = "queued" | "parsing" | "chunking" | "extracting" | "researching" | "synthesizing" | "reviewing" | "composing" | "rendering" | "completed" | "failed";
 export type ReportJob = { job_id: string; report_id: string; status: "queued" | "running" | "completed" | "failed"; stage: ReportJobStage; progress: number; message: string; source_filenames: string[]; provider: string | null; fallback: boolean | null; error: { code: string; message: string } | null; created_at: string; updated_at: string; completed_at: string | null };
-export type ReportMetadata = { report_id: string; status: "completed"; available_formats: string[]; document?: DocumentMetadata; documents?: DocumentMetadata[]; generation: { provider: string; model: string | null; elapsed_ms: number; successful: boolean; fallback: boolean; enhanced: boolean; reason: string | null }; settings?: WizardSettings | null };
+export type ReportMetadata = { report_id: string; status: "completed"; available_formats: string[]; document?: DocumentMetadata; documents?: DocumentMetadata[]; generation: { provider: string; model: string | null; elapsed_ms: number; successful: boolean; fallback: boolean; enhanced: boolean; reason: string | null }; settings?: WizardSettings | LegacyWizardSettings | null };
 export type ReportSectionLink = { heading: string; anchor_id: string };
 export type ReportPresentation = {
-  cover: { title: string; domain: string; generated_on: string | null; status: string; author: string | null; organisation: string | null; provider: string | null; model: string | null; knowledge_object_count: number; evidence_source_count: number; mean_confidence: number | null };
+  cover: { title: string; subtitle: string | null; domain: string; generated_on: string | null; status: string; author: string | null; organisation: string | null; university: string | null; department: string | null; publication_type: string | null; provider: string | null; model: string | null; knowledge_object_count: number; evidence_source_count: number; mean_confidence: number | null };
   template_key: VisualTemplate;
   mode: ReportStructure;
+  citation_style: CitationStyle;
   table_of_contents: { entries: ReportSectionLink[] };
   sections: Array<{ key: string; heading: string; anchor_id: string }>;
+  revision: number;
+  bibliography?: Array<{ number: number; source_label: string; citation: string }>;
+  quality?: { status: "passed" | "warnings" | "blocked"; checked_claims: number; supported_claims: number; issues: Array<{ code: "unsupported-claim" | "missing-section" | "missing-bibliography" | "formatting"; severity: "warning" | "error"; message: string; section_key: string | null }> };
+};
+export type EditableReportSection = { key: ReportSectionKey; heading: string; content: string; locked: boolean; edited: boolean };
+export type ReportTransformAction = "rewrite" | "shorten" | "expand";
+export type ReportEditingState = {
+  template_key: VisualTemplate;
+  revision: number;
+  sections: EditableReportSection[];
+  last_transform: { action: ReportTransformAction; provider: string; fallback: boolean } | null;
 };
 export type ChangeOperation = "edit" | "create" | "delete";
 export type ReviewChange = { change_id: string; operation: ChangeOperation; chunk_id: string | null; document_id: string | null; old_html: string | null; new_html: string | null; ai_explanation: string | null; insert_after_chunk_id: string | null; insert_before_chunk_id: string | null };
@@ -19,8 +31,27 @@ export type Health = { status: "healthy"; service: string; version: string; read
 export type ApiError = { code: string; message: string; request_id: string };
 export type ProjectApiRecord = { id: string; title: string; report_id: string | null; status: "draft" | "ready"; sources: DocumentMetadata[]; available_formats: string[]; created_at: string; updated_at: string };
 export type ReportStructure = "professional" | "executive" | "technical" | "full";
-export type VisualTemplate = "paperforge-classic" | "modern-research" | "editorial" | "minimal";
+export type VisualTemplate = "paperforge-classic" | "modern-research" | "ieee-inspired-technical" | "editorial" | "minimal";
+export type CitationStyle = "source-linked" | "apa" | "ieee" | "harvard";
+export type ContentTone = "academic" | "professional" | "executive" | "technical";
+export type ReportSectionKey = "abstract" | "document-overview" | "research-methodology" | "executive-summary" | "key-insights" | "technical-analysis" | "historical-timeline" | "important-concepts" | "evidence-summary" | "appendix";
+export type ReportSectionSetting = { key: ReportSectionKey; heading: string };
+export type EvidenceAvailability = { key: ReportSectionKey; heading: string; level: "strong" | "moderate" | "limited"; evidence_count: number; source_count: number; reason: string };
+export type OutlineSection = ReportSectionSetting & { evidence: EvidenceAvailability };
+export type OutlineProposal = { proposal_id: string; status: "draft" | "approved"; revision: number; source_filenames: string[]; sections: OutlineSection[]; catalog: EvidenceAvailability[]; created_at: string; updated_at: string; approved_at: string | null };
 export type WizardSettings = {
+  schema_version: 2;
+  project_title: string;
+  research_domain: string;
+  purpose: string | null;
+  report_structure: { preset: ReportStructure; sections: ReportSectionSetting[] };
+  content: { tone: ContentTone; audience: string | null; language: string };
+  visual_theme: { template: VisualTemplate; page_size: "A4" | "letter"; density: "comfortable" | "compact"; accent_color: string | null };
+  citations: { style: CitationStyle; include_bibliography: boolean };
+  outline_approval: { approved: boolean; proposal_id: string | null; revision: number };
+  publication: { title: string; subtitle: string | null; author: string; organisation: string | null; university: string | null; department: string | null; publication_type: string | null };
+};
+export type LegacyWizardSettings = {
   project_title: string;
   research_domain: string;
   purpose: string | null;

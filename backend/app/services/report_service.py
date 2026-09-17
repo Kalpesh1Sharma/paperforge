@@ -20,14 +20,26 @@ from app.models.parsed_document import ParsedDocument
 from app.projects import ProjectService, SQLiteProjectStore
 from app.reports import (
     DocumentMetadata,
+    EditableDocxRenderer,
     HTMLRenderer,
     MarkdownRenderer,
     PDFRenderer,
+    PRESENTATION_SECTION_SPECS,
     PresentationModel,
+    PresentationSection,
     ReportGenerationSettings,
+    TableOfContents,
+    TableOfContentsEntry,
 )
 from app.reports.exceptions import ReportRenderingError
 from app.reports.publication_metadata import document_overview_intro
+from app.reports.citation_styles import apply_citation_style
+from app.reports.quality import check_report_quality
+from app.reports.editor import (
+    SectionTransformer,
+    TransformAction,
+    editable_section_text,
+)
 from app.services.pipeline_service import (
     MultiDocumentPipelineArtifacts,
     PipelineArtifacts,
@@ -43,9 +55,9 @@ from app.services.upload_service import (
 
 logger = logging.getLogger(__name__)
 
-ReportFormat = Literal["all", "json", "html", "markdown", "pdf"]
-StoredFormat = Literal["json", "html", "markdown", "pdf"]
-_AVAILABLE_FORMATS: tuple[StoredFormat, ...] = ("json", "html", "markdown", "pdf")
+ReportFormat = Literal["all", "json", "html", "markdown", "pdf", "docx"]
+StoredFormat = Literal["json", "html", "markdown", "pdf", "docx"]
+_AVAILABLE_FORMATS: tuple[StoredFormat, ...] = ("json", "html", "markdown", "pdf", "docx")
 
 
 class ReportServiceError(RuntimeError):
@@ -66,6 +78,10 @@ class ReportStorageError(ReportServiceError):
 
 class ReportOutputError(ReportServiceError):
     """Raised when a renderer cannot materialize a requested artifact."""
+
+
+class ReportEditConflictError(ReportServiceError):
+    """Raised when a locked section rejects a content mutation."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +153,7 @@ class LocalReportStore:
             "report.html",
             "report.md",
             "report.pdf",
+            "report.docx",
             "metadata.json",
             "review.json",
             "reviewed_report.docx",
@@ -306,7 +323,9 @@ class PaperForgeService:
         markdown_renderer: MarkdownRenderer | None = None,
         html_renderer: HTMLRenderer | None = None,
         pdf_renderer: PDFRenderer | None = None,
+        docx_renderer: EditableDocxRenderer | None = None,
         project_service: ProjectService | None = None,
+        section_transformer: SectionTransformer | None = None,
     ) -> None:
         self._store = store
         self._pipeline_service = pipeline_service
@@ -314,6 +333,8 @@ class PaperForgeService:
         self._markdown_renderer = markdown_renderer or MarkdownRenderer()
         self._html_renderer = html_renderer or HTMLRenderer()
         self._pdf_renderer = pdf_renderer or PDFRenderer()
+        self._docx_renderer = docx_renderer or EditableDocxRenderer()
+        self._section_transformer = section_transformer or SectionTransformer()
         self._project_service = project_service or ProjectService(
             SQLiteProjectStore(store.root_dir / "paperforge.db"),
             store.root_dir,
@@ -496,7 +517,7 @@ class PaperForgeService:
         endpoint intentionally requests ``all`` so every retrieval endpoint is
         ready immediately after a successful POST.
         """
-        if output_format not in {"all", "json", "html", "markdown", "pdf"}:
+        if output_format not in {"all", "json", "html", "markdown", "pdf", "docx"}:
             raise InvalidReportUploadError("Requested output format is not supported.")
 
         path = Path(uploaded_file)
@@ -553,7 +574,7 @@ class PaperForgeService:
         progress: ProgressCallback | None = None,
     ) -> GeneratedMultiReport:
         """Run one combined pipeline over already-persisted ordered PDFs."""
-        if output_format not in {"all", "json", "html", "markdown", "pdf"}:
+        if output_format not in {"all", "json", "html", "markdown", "pdf", "docx"}:
             raise InvalidReportUploadError("Requested output format is not supported.")
         artifacts = (
             self._pipeline_service.process_many(
@@ -615,6 +636,214 @@ class PaperForgeService:
         """Return the durable PDF artifact path for FastAPI file streaming."""
         return self._store.file_path(report_id, "report.pdf")
 
+    def docx_path(self, report_id: UUID) -> Path:
+        """Return the locally generated, fully editable Word report."""
+        return self._store.file_path(report_id, "report.docx")
+
+    def editing_state(self, report_id: UUID) -> dict[str, object]:
+        """Return editable section buffers without exposing hidden report data."""
+        presentation = self.presentation(report_id)
+        return self._editing_payload(presentation)
+
+    def update_section(
+        self,
+        report_id: UUID,
+        section_key: str,
+        content: str,
+    ) -> dict[str, object]:
+        """Replace one unlocked section body and rerender existing artifacts."""
+        presentation = self.presentation(report_id)
+        index, section = self._editable_section(presentation, section_key)
+        if section.locked:
+            raise ReportEditConflictError(
+                "Unlock this section before changing its content."
+            )
+        normalized_content = content.strip()
+        if not normalized_content:
+            raise InvalidReportUploadError("Section content must not be blank.")
+        updated = section.model_copy(update={"edited_content": normalized_content})
+        presentation = self._replace_section(presentation, index, updated)
+        self._persist_edited_presentation(report_id, presentation)
+        return self._editing_payload(presentation)
+
+    def transform_section(
+        self,
+        report_id: UUID,
+        section_key: str,
+        action: TransformAction,
+    ) -> dict[str, object]:
+        """Rewrite one unlocked section through BYOK failover and save the result."""
+        presentation = self.presentation(report_id)
+        index, section = self._editable_section(presentation, section_key)
+        if section.locked:
+            raise ReportEditConflictError(
+                "Unlock this section before changing its content."
+            )
+        result = self._section_transformer.transform(
+            editable_section_text(section),
+            action,
+            heading=section.heading,
+        )
+        normalized_content = result.content.strip()
+        if not normalized_content:
+            raise InvalidReportUploadError(
+                "The assisted edit did not return usable section content."
+            )
+        updated = section.model_copy(update={"edited_content": normalized_content})
+        presentation = self._replace_section(presentation, index, updated)
+        self._persist_edited_presentation(report_id, presentation)
+        payload = self._editing_payload(presentation)
+        payload["last_transform"] = {
+            "action": action,
+            "provider": result.provider,
+            "fallback": result.fallback,
+        }
+        return payload
+
+    def set_section_lock(
+        self,
+        report_id: UUID,
+        section_key: str,
+        locked: bool,
+    ) -> dict[str, object]:
+        """Persist explicit approval state without modifying section content."""
+        presentation = self.presentation(report_id)
+        index, section = self._editable_section(presentation, section_key)
+        updated = section.model_copy(update={"locked": locked})
+        presentation = self._replace_section(presentation, index, updated)
+        self._persist_edited_presentation(report_id, presentation)
+        return self._editing_payload(presentation)
+
+    def switch_template(
+        self,
+        report_id: UUID,
+        template_key: str,
+    ) -> dict[str, object]:
+        """Rerender the same saved content with another registered template."""
+        if template_key not in {
+            "paperforge-classic",
+            "modern-research",
+            "ieee-inspired-technical",
+        }:
+            raise InvalidReportUploadError("Choose a supported Phase 2 template.")
+        current = self.presentation(report_id)
+        presentation = current.model_copy(
+            update={
+                "template_key": template_key,
+                "revision": current.revision + 1,
+            }
+        )
+        metadata = self.metadata(report_id)
+        settings_payload = metadata.get("settings")
+        if isinstance(settings_payload, dict):
+            visual_theme = settings_payload.get("visual_theme")
+            if isinstance(visual_theme, dict):
+                visual_theme = dict(visual_theme)
+                visual_theme["template"] = template_key
+                settings_payload = dict(settings_payload)
+                settings_payload["visual_theme"] = visual_theme
+                metadata["settings"] = settings_payload
+        self._persist_edited_presentation(report_id, presentation, metadata=metadata)
+        return self._editing_payload(presentation)
+
+    @staticmethod
+    def _editable_section(
+        presentation: PresentationModel,
+        section_key: str,
+    ) -> tuple[int, PresentationSection]:
+        for index, section in enumerate(presentation.sections):
+            if section.key == section_key:
+                return index, section
+        raise InvalidReportUploadError("That report section is not available.")
+
+    @staticmethod
+    def _replace_section(
+        presentation: PresentationModel,
+        index: int,
+        section: PresentationSection,
+    ) -> PresentationModel:
+        sections = list(presentation.sections)
+        sections[index] = section
+        return presentation.model_copy(
+            update={
+                "sections": tuple(sections),
+                "revision": presentation.revision + 1,
+            }
+        )
+
+    @staticmethod
+    def _editing_payload(presentation: PresentationModel) -> dict[str, object]:
+        return {
+            "template_key": presentation.template_key,
+            "revision": presentation.revision,
+            "sections": [
+                {
+                    "key": section.key,
+                    "heading": section.heading,
+                    "content": editable_section_text(section),
+                    "locked": section.locked,
+                    "edited": section.edited_content is not None,
+                }
+                for section in presentation.sections
+            ],
+            "last_transform": None,
+        }
+
+    def _persist_edited_presentation(
+        self,
+        report_id: UUID,
+        presentation: PresentationModel,
+        *,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        """Render every derivative first, then replace the stored publication."""
+        presentation = check_report_quality(
+            presentation,
+            bibliography_required=bool(presentation.bibliography),
+        )
+        directory = self._store.report_directory(report_id)
+        temporary_pdf: Path | None = None
+        temporary_docx: Path | None = None
+        try:
+            markdown = self._markdown_renderer.render_presentation(presentation)
+            html = self._html_renderer.render_presentation(presentation)
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=".edited-report-", suffix=".pdf", dir=directory
+            )
+            os.close(descriptor)
+            temporary_pdf = Path(temporary_name)
+            self._pdf_renderer.render_presentation(presentation, temporary_pdf)
+            pdf_bytes = temporary_pdf.read_bytes()
+            descriptor, temporary_docx_name = tempfile.mkstemp(
+                prefix=".edited-report-", suffix=".docx", dir=directory
+            )
+            os.close(descriptor)
+            temporary_docx = Path(temporary_docx_name)
+            self._docx_renderer.render_presentation(presentation, temporary_docx)
+            docx_bytes = temporary_docx.read_bytes()
+            self._store.write_text(report_id, "report.md", markdown)
+            self._store.write_text(report_id, "report.html", html)
+            self._store.write_bytes(report_id, "report.pdf", pdf_bytes)
+            self._store.write_bytes(report_id, "report.docx", docx_bytes)
+            if metadata is not None:
+                self._store.write_json(report_id, "metadata.json", metadata)
+            self._store.write_json(
+                report_id,
+                "report.json",
+                presentation.model_dump(mode="json", warnings="error"),
+            )
+        except ReportRenderingError as exc:
+            raise ReportOutputError("Unable to render the edited report output.") from exc
+        except ReportStorageError:
+            raise
+        except OSError as exc:
+            raise ReportStorageError("Unable to persist edited report artifacts.") from exc
+        finally:
+            if temporary_pdf is not None:
+                temporary_pdf.unlink(missing_ok=True)
+            if temporary_docx is not None:
+                temporary_docx.unlink(missing_ok=True)
+
     def _materialize_artifacts(
         self,
         report_id: UUID,
@@ -641,6 +870,11 @@ class PaperForgeService:
                 self._pdf_renderer.render_presentation(
                     artifacts.presentation,
                     self._store.artifact_path(report_id, "report.pdf"),
+                )
+            if "docx" in formats:
+                self._docx_renderer.render_presentation(
+                    artifacts.presentation,
+                    self._store.artifact_path(report_id, "report.docx"),
                 )
             # The presentation JSON marks a directory as complete. Write it
             # only after all selected renderers succeed.
@@ -746,7 +980,15 @@ class PaperForgeService:
     ) -> PipelineArtifacts | MultiDocumentPipelineArtifacts:
         """Apply publication metadata without modifying evidence or report text."""
         if settings is None:
-            return artifacts
+            presentation = apply_citation_style(
+                artifacts.presentation,
+                style="source-linked",
+                include_bibliography=True,
+            )
+            presentation = check_report_quality(
+                presentation, bibliography_required=True
+            )
+            return replace(artifacts, presentation=presentation)
         cover_payload = artifacts.presentation.cover.model_dump(mode="python")
         cover_payload.update(
             {
@@ -754,21 +996,69 @@ class PaperForgeService:
                 "domain": settings.research_domain,
                 "author": settings.author,
                 "organisation": settings.organisation,
+                "subtitle": settings.publication.subtitle,
+                "university": settings.publication.university,
+                "department": settings.publication.department,
+                "publication_type": settings.publication.publication_type,
             }
         )
         cover = DocumentMetadata.model_validate(cover_payload)
+        composed_sections = {
+            section.key: section for section in artifacts.presentation.sections
+        }
+        canonical_anchors = {
+            key: anchor_id
+            for key, _heading, anchor_id in PRESENTATION_SECTION_SPECS
+        }
         sections = tuple(
-            section.model_copy(update={"intro": document_overview_intro(cover)})
-            if section.key == "document-overview"
-            else section
-            for section in artifacts.presentation.sections
+            composed_sections.get(
+                configured.key,
+                PresentationSection(
+                    key=configured.key,
+                    heading=configured.heading,
+                    anchor_id=canonical_anchors[configured.key],
+                ),
+            ).model_copy(
+                update={
+                    "heading": configured.heading,
+                    **(
+                        {"intro": document_overview_intro(cover)}
+                        if configured.key == "document-overview"
+                        else {}
+                    ),
+                }
+            )
+            for configured in settings.report_structure.sections
+        )
+        table_of_contents = TableOfContents(
+            entries=tuple(
+                TableOfContentsEntry(
+                    heading=section.heading,
+                    anchor_id=section.anchor_id,
+                )
+                for section in sections
+            )
         )
         presentation = artifacts.presentation.model_copy(
             update={
                 "cover": cover,
                 "sections": sections,
+                "table_of_contents": table_of_contents,
                 "template_key": settings.visual_template,
+                "page_size": settings.visual_theme.page_size,
+                "content_density": settings.visual_theme.density,
+                "accent_color": settings.visual_theme.accent_color,
+                "citation_style": settings.citations.style,
             }
+        )
+        presentation = apply_citation_style(
+            presentation,
+            style=settings.citations.style,
+            include_bibliography=settings.citations.include_bibliography,
+        )
+        presentation = check_report_quality(
+            presentation,
+            bibliography_required=settings.citations.include_bibliography,
         )
         return replace(artifacts, presentation=presentation)
 

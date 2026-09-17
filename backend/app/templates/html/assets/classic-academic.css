@@ -1,0 +1,30 @@
+:root { --template-accent: #7a263a; }
+.template-paperforge-classic,
+.template-editorial {
+  --ink: #172033;
+  --accent: var(--template-accent);
+  --accent-soft: #f5ecef;
+  --forest: var(--template-accent);
+  --forest-deep: #2a1830;
+  --forest-soft: #f5ecef;
+  --ochre: #9b6a21;
+  font-family: Georgia, "Times New Roman", serif;
+}
+.template-paperforge-classic .cover-page,
+.template-editorial .cover-page { border-block-start: .32rem solid var(--accent); }
+.template-paperforge-classic .cover-rule,
+.template-editorial .cover-rule { inline-size: 5.5rem; background: var(--accent); }
+.template-paperforge-classic .cover-kicker,
+.template-paperforge-classic .section-label,
+.template-editorial .cover-kicker,
+.template-editorial .section-label { color: var(--accent); letter-spacing: .14em; }
+.template-paperforge-classic .publication-section h2,
+.template-editorial .publication-section h2 { color: #2a1830; }
+.template-paperforge-classic .evidence-note,
+.template-editorial .evidence-note { border-inline-start-color: var(--accent); background: var(--accent-soft); }
+@media print {
+  .template-paperforge-classic .cover-page,
+  .template-editorial .cover-page { padding-block-start: 16mm; }
+  .template-paperforge-classic .cover-page h1,
+  .template-editorial .cover-page h1 { max-inline-size: 145mm; font-size: 34pt; }
+}

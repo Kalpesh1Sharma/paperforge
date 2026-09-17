@@ -9,8 +9,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.reports.generation_settings import ReportSectionConfiguration, VisualTemplate
 
-ReportOutputFormat = Literal["all", "json", "html", "markdown", "pdf"]
+
+ReportOutputFormat = Literal["all", "json", "html", "markdown", "pdf", "docx"]
 
 
 class ReviewDecisionRequest(BaseModel):
@@ -36,3 +38,39 @@ class RenameProjectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     title: str = Field(min_length=1, max_length=100)
+
+
+class ApproveOutlineRequest(BaseModel):
+    """The exact ordered section list a user has reviewed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sections: tuple[ReportSectionConfiguration, ...] = Field(min_length=1)
+
+
+class EditReportSectionRequest(BaseModel):
+    """Replace one generated section with user-controlled prose."""
+
+    model_config = ConfigDict(extra="forbid")
+    content: str = Field(min_length=1, max_length=30000)
+
+
+class TransformReportSectionRequest(BaseModel):
+    """Request one bounded AI-assisted section transformation."""
+
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["rewrite", "shorten", "expand"]
+
+
+class SetReportSectionLockRequest(BaseModel):
+    """Lock or unlock one approved section."""
+
+    model_config = ConfigDict(extra="forbid")
+    locked: bool
+
+
+class SwitchReportTemplateRequest(BaseModel):
+    """Choose a visual template without changing report content."""
+
+    model_config = ConfigDict(extra="forbid")
+    template: VisualTemplate

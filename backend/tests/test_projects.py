@@ -123,3 +123,21 @@ def test_project_api_rejects_blank_titles_and_malformed_ids(tmp_path: Path) -> N
     assert blank.status_code == 400
     assert blank.json()["error"]["code"] == "invalid_project"
     assert malformed.status_code == 422
+
+
+def test_deleting_ready_project_removes_report_files(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    report_id = uuid4()
+    report_directory = tmp_path / "reports" / str(report_id)
+    report_directory.mkdir(parents=True)
+    (report_directory / "report.pdf").write_bytes(b"%PDF")
+    project = service.attach_report(
+        report_id,
+        (_document(),),
+        ("json", "html", "pdf", "docx"),
+    )
+
+    service.delete(project.id)
+
+    assert not report_directory.exists()
+    assert service.list() == ()

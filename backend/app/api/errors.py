@@ -14,6 +14,7 @@ from app.services.pipeline_service import (
 )
 from app.services.report_service import (
     InvalidReportUploadError,
+    ReportEditConflictError,
     ReportNotFoundError,
     ReportOutputError,
     ReportServiceError,
@@ -149,6 +150,18 @@ async def storage_error_handler(
     )
 
 
+async def report_edit_conflict_handler(
+    request: Request, exc: ReportEditConflictError
+) -> JSONResponse:
+    """Protect explicitly locked report sections from accidental mutation."""
+    return _error_response(
+        request,
+        status_code=status.HTTP_409_CONFLICT,
+        code="report_section_locked",
+        message=str(exc),
+    )
+
+
 async def project_not_found_handler(
     request: Request, exc: ProjectNotFoundError
 ) -> JSONResponse:
@@ -281,6 +294,7 @@ def install_error_handlers(app: FastAPI) -> None:
     )
     app.add_exception_handler(ReportStorageError, storage_error_handler)
     app.add_exception_handler(ReportOutputError, storage_error_handler)
+    app.add_exception_handler(ReportEditConflictError, report_edit_conflict_handler)
     app.add_exception_handler(ProjectNotFoundError, project_not_found_handler)
     app.add_exception_handler(ProjectValidationError, project_validation_handler)
     app.add_exception_handler(ProjectConflictError, project_conflict_handler)

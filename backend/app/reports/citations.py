@@ -43,10 +43,7 @@ class CitationIndex:
             if isinstance(source_filename, str) and source_filename.strip()
             else None
         )
-        chunk_labels = {
-            chunk.chunk_id: f"{chunk.document_filename} · excerpt {chunk.chunk_index + 1}"
-            for chunk in source_chunks
-        }
+        chunk_labels = {chunk.chunk_id: cls._chunk_label(chunk) for chunk in source_chunks}
 
         for evidence in report.synthesis_metadata.source_evidence:
             if evidence.chunk_id in labels:
@@ -73,6 +70,17 @@ class CitationIndex:
                 sources.append(CitationSource(label, (reference,)))
 
         return cls(labels, tuple(sources))
+
+    @staticmethod
+    def _chunk_label(chunk: DocumentChunk) -> str:
+        """Prefer preserved PDF page ranges and retain excerpt compatibility."""
+        start = chunk.metadata.get("page_number")
+        end = chunk.metadata.get("page_end_number")
+        if isinstance(start, int) and not isinstance(start, bool):
+            if isinstance(end, int) and not isinstance(end, bool) and end > start:
+                return f"{chunk.document_filename} · pp. {start}-{end}"
+            return f"{chunk.document_filename} · p. {start}"
+        return f"{chunk.document_filename} · excerpt {chunk.chunk_index + 1}"
 
     @property
     def sources(self) -> tuple[CitationSource, ...]:

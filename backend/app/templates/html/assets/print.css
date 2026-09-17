@@ -175,6 +175,14 @@ h4,
   break-before: page;
 }
 
+.publication-section--bibliography {
+  break-before: page;
+}
+
+.bibliography-list li {
+  break-inside: avoid-page;
+}
+
 .section-header,
 .finding-group > header,
 .entity-group > header,
@@ -187,6 +195,35 @@ h4,
 
 .section-header {
   break-inside: avoid-page;
+}
+
+/* Keep a section opening attached to its first substantive block. Chromium
+   otherwise may leave the heading/intro behind and move the only card to the
+   following page. */
+.publication-section > .section-prose,
+.finding-group-note,
+.entity-group-note,
+.concept-cluster > header,
+.timeline > header {
+  break-after: avoid-page;
+}
+
+.publication-section > .section-prose {
+  break-inside: avoid-page;
+}
+
+.insight-list > li,
+.concept-list > li,
+.timeline > ol > li,
+.reference-list > li {
+  break-inside: avoid-page;
+}
+
+.insight-list > li::marker,
+.concept-list > li::marker,
+.timeline > ol > li::marker,
+.reference-list > li::marker {
+  content: "";
 }
 
 .insight,

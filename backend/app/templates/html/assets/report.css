@@ -331,6 +331,21 @@ h4 {
   max-inline-size: var(--reading-measure);
 }
 
+.section-prose--edited p {
+  white-space: pre-wrap;
+}
+
+.bibliography-list {
+  margin: 0;
+  padding-inline-start: 1.5rem;
+}
+
+.bibliography-list li {
+  margin-block: 0 0.75rem;
+  padding-inline-start: 0.35rem;
+  line-height: 1.55;
+}
+
 .section-prose p + p {
   margin-block-start: var(--space-2);
 }

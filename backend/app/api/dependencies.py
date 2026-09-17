@@ -5,6 +5,7 @@ from fastapi import Depends
 from app.config import Settings, settings
 from app.integrations.superdocs import SuperDocsClient
 from app.jobs import ReportJobReader, ReportJobService, SQLiteReportJobStore
+from app.outlines import OutlineService
 from app.projects import ProjectService, SQLiteProjectStore
 from app.services.pipeline_service import PipelineService
 from app.services.report_service import LocalReportStore, PaperForgeService
@@ -69,6 +70,14 @@ def get_report_job_store(
 ) -> SQLiteReportJobStore:
     """Provide the shared durable job store without initializing AI providers."""
     return SQLiteReportJobStore(store.root_dir / "paperforge.db")
+
+
+def get_outline_service(
+    store: LocalReportStore = Depends(get_report_store),
+    upload_service: UploadService = Depends(get_upload_service),
+) -> OutlineService:
+    """Provide the durable evidence-outline planner and approval boundary."""
+    return OutlineService(store.root_dir, upload_service)
 
 
 def get_report_job_reader(

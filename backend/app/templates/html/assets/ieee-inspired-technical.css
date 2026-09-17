@@ -1,0 +1,32 @@
+:root { --template-accent: #111111; }
+.template-ieee-inspired-technical {
+  --ink: #111;
+  --accent: var(--template-accent);
+  --accent-soft: #f4f4f4;
+  --forest: #111;
+  --forest-deep: #111;
+  --forest-soft: #f4f4f4;
+  --ochre: #333;
+  font-family: "Times New Roman", Times, serif;
+  font-size: .94rem;
+}
+.template-ieee-inspired-technical .cover-page { text-align: center; border: 1px solid #222; padding-inline: 3rem; }
+.template-ieee-inspired-technical .cover-rule { margin-inline: auto; inline-size: 100%; block-size: 1px; background: #111; }
+.template-ieee-inspired-technical .publication-mark,
+.template-ieee-inspired-technical .cover-kicker,
+.template-ieee-inspired-technical .section-label { color: #111; letter-spacing: .09em; text-transform: uppercase; }
+.template-ieee-inspired-technical .publication-metadata { text-align: start; }
+.template-ieee-inspired-technical .section-header { border-block-end: 1px solid #222; }
+.template-ieee-inspired-technical .publication-section h2 { font-size: 1.35rem; text-transform: uppercase; letter-spacing: .035em; }
+.template-ieee-inspired-technical .publication-section h3 { font-size: 1.05rem; }
+.template-ieee-inspired-technical .evidence-note { background: #f5f5f5; border: 1px solid #aaa; border-inline-start: 3px solid #111; }
+.template-ieee-inspired-technical .status-badge { border-radius: 0; background: #eee; color: #111; }
+.template-ieee-inspired-technical.density-compact .section-prose,
+.template-ieee-inspired-technical.density-compact .finding-group { line-height: 1.32; }
+@media print {
+  .template-ieee-inspired-technical { font-size: 9.5pt; }
+  .template-ieee-inspired-technical .cover-page { min-block-size: 230mm; padding: 18mm 16mm; }
+  .template-ieee-inspired-technical .cover-page h1 { font-size: 24pt; max-inline-size: 165mm; margin-inline: auto; }
+  .template-ieee-inspired-technical .publication-section { padding-block: 8mm; }
+  .template-ieee-inspired-technical .publication-section h2 { font-size: 14pt; }
+}

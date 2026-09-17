@@ -281,6 +281,7 @@ def test_health_reports_and_all_persisted_formats(client: TestClient) -> None:
     report = client.get(f"/reports/{report_id}")
     html = client.get(f"/reports/{report_id}/html")
     pdf = client.get(f"/reports/{report_id}/pdf")
+    docx = client.get(f"/reports/{report_id}/editable-docx")
     markdown = client.get(f"/reports/{report_id}/markdown")
     metadata = client.get(f"/reports/{report_id}/metadata")
 
@@ -290,6 +291,11 @@ def test_health_reports_and_all_persisted_formats(client: TestClient) -> None:
     assert "<!doctype html>" in html.text
     assert pdf.status_code == 200 and pdf.headers["content-type"].startswith("application/pdf")
     assert pdf.content.startswith(b"%PDF")
+    assert docx.status_code == 200
+    assert docx.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    assert docx.content.startswith(b"PK")
     assert markdown.status_code == 200
     assert markdown.headers["content-type"].startswith("text/markdown")
     assert metadata.status_code == 200
@@ -315,7 +321,7 @@ def test_upload_creates_required_local_artifacts_and_uses_injected_pipeline(
     assert pipeline.calls == [report_directory / "research.pdf"]
     assert {
         path.name for path in report_directory.iterdir()
-    } >= {"input.pdf", "report.json", "report.html", "report.md", "report.pdf", "metadata.json"}
+    } >= {"input.pdf", "report.json", "report.html", "report.md", "report.pdf", "report.docx", "metadata.json"}
     project = ProjectService(
         SQLiteProjectStore(tmp_path / "reports" / "paperforge.db"),
         tmp_path / "reports",
@@ -330,14 +336,29 @@ def test_wizard_settings_control_structure_cover_metadata_and_project(
     service, pipeline = _service(tmp_path)
     app.dependency_overrides[get_paperforge_service] = lambda: service
     settings = {
+        "schema_version": 2,
         "project_title": "AI Governance Workspace",
         "research_domain": "Artificial Intelligence Governance",
         "purpose": "Brief an academic review panel.",
-        "structure": "technical",
-        "visual_template": "editorial",
-        "report_title": "Responsible AI in Public Research",
-        "author": "Kalpesh Sharma",
-        "organisation": "MNIT Jaipur",
+        "report_structure": {
+            "preset": "technical",
+            "sections": [
+                {"key": "executive-summary", "heading": "Decision Summary"},
+                {"key": "document-overview", "heading": "Evidence Scope"},
+            ],
+        },
+        "content": {"tone": "academic", "audience": "Review panel", "language": "en"},
+        "visual_theme": {"template": "editorial", "page_size": "A4", "density": "comfortable", "accent_color": None},
+        "citations": {"style": "apa", "include_bibliography": True},
+        "publication": {
+            "title": "Responsible AI in Public Research",
+            "subtitle": "Institutional evidence review",
+            "author": "Kalpesh Sharma",
+            "organisation": "PaperForge Lab",
+            "university": "MNIT Jaipur",
+            "department": "Computer Science",
+            "publication_type": "Academic report",
+        },
     }
     try:
         with TestClient(app) as client:
@@ -357,16 +378,35 @@ def test_wizard_settings_control_structure_cover_metadata_and_project(
     assert pipeline.modes == [ReportMode.TECHNICAL]
     assert report["mode"] == "technical"
     assert report["template_key"] == "editorial"
-    assert report["cover"]["title"] == settings["report_title"]
+    assert report["cover"]["title"] == settings["publication"]["title"]
     assert report["cover"]["author"] == "Kalpesh Sharma"
+    assert report["cover"]["university"] == "MNIT Jaipur"
+    assert report["citation_style"] == "apa"
+    assert [(section["key"], section["heading"]) for section in report["sections"]] == [
+        ("executive-summary", "Decision Summary"),
+        ("document-overview", "Evidence Scope"),
+    ]
     overview = next(
         section for section in report["sections"]
         if section["key"] == "document-overview"
     )
     assert any(settings["research_domain"] in paragraph for paragraph in overview["intro"])
     assert not any("General Research" in paragraph for paragraph in overview["intro"])
-    assert metadata["settings"] == settings
+    assert metadata["settings"]["schema_version"] == 2
+    assert metadata["settings"]["report_structure"]["preset"] == "technical"
+    assert metadata["settings"]["visual_theme"]["template"] == "editorial"
+    assert metadata["settings"]["publication"] == {
+        "title": "Responsible AI in Public Research",
+        "subtitle": "Institutional evidence review",
+        "author": "Kalpesh Sharma",
+        "organisation": "PaperForge Lab",
+        "university": "MNIT Jaipur",
+        "department": "Computer Science",
+        "publication_type": "Academic report",
+    }
     assert "Kalpesh Sharma" in html and "MNIT Jaipur" in html
+    assert "Institutional evidence review" in html
+    assert "Citation style" in html and "APA" in html
     assert "Prepared by Kalpesh Sharma." in html
     assert service._project_service.get(report_id).title == "AI Governance Workspace"
 
@@ -380,6 +420,103 @@ def test_invalid_wizard_settings_are_rejected_before_generation(client: TestClie
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_upload"
+
+
+def test_report_sections_are_editable_lockable_and_template_independent(
+    client: TestClient,
+) -> None:
+    """Batch 9 updates derivatives while preserving one saved content model."""
+    report_id = _create_report(client)
+
+    state = client.get(f"/reports/{report_id}/editing")
+    assert state.status_code == 200
+    assert state.json()["revision"] == 1
+    section_key = state.json()["sections"][0]["key"]
+
+    edited = client.patch(
+        f"/reports/{report_id}/sections/{section_key}",
+        json={"content": "A clearer user-approved section grounded in the source."},
+    )
+    assert edited.status_code == 200
+    assert edited.json()["revision"] == 2
+    assert edited.json()["sections"][0]["edited"] is True
+    assert "A clearer user-approved section" in client.get(
+        f"/reports/{report_id}/html"
+    ).text
+    assert "A clearer user-approved section" in client.get(
+        f"/reports/{report_id}/markdown"
+    ).text
+
+    locked = client.patch(
+        f"/reports/{report_id}/sections/{section_key}/lock",
+        json={"locked": True},
+    )
+    assert locked.status_code == 200
+    assert locked.json()["sections"][0]["locked"] is True
+    rejected = client.patch(
+        f"/reports/{report_id}/sections/{section_key}",
+        json={"content": "This must not replace approved content."},
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["error"]["code"] == "report_section_locked"
+
+    switched = client.patch(
+        f"/reports/{report_id}/template",
+        json={"template": "modern-research"},
+    )
+    assert switched.status_code == 200
+    assert switched.json()["template_key"] == "modern-research"
+    assert switched.json()["sections"][0]["content"].startswith(
+        "A clearer user-approved section"
+    )
+    assert client.get(f"/reports/{report_id}").json()["template_key"] == (
+        "modern-research"
+    )
+
+    blank = client.patch(
+        f"/reports/{report_id}/sections/{section_key}/lock",
+        json={"locked": False},
+    )
+    assert blank.status_code == 200
+    rejected_blank = client.patch(
+        f"/reports/{report_id}/sections/{section_key}",
+        json={"content": "   "},
+    )
+    assert rejected_blank.status_code == 400
+    assert rejected_blank.json()["error"]["code"] == "invalid_upload"
+
+
+def test_report_section_transform_persists_provider_result(
+    client: TestClient,
+) -> None:
+    class _Transformer:
+        def transform(self, content: str, action: str, *, heading: str) -> object:
+            del content, heading
+            from app.reports.editor import SectionTransformResult
+
+            return SectionTransformResult(
+                content=f"Provider {action} result.",
+                provider="gemini",
+                fallback=False,
+            )
+
+    service = app.dependency_overrides[get_paperforge_service]()
+    service._section_transformer = _Transformer()
+    report_id = _create_report(client)
+    section_key = client.get(f"/reports/{report_id}/editing").json()["sections"][0]["key"]
+
+    response = client.post(
+        f"/reports/{report_id}/sections/{section_key}/transform",
+        json={"action": "shorten"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["last_transform"] == {
+        "action": "shorten",
+        "provider": "gemini",
+        "fallback": False,
+    }
+    assert response.json()["sections"][0]["content"] == "Provider shorten result."
 
 
 def test_multi_upload_persists_ordered_sources_and_retrieves_without_rerunning(

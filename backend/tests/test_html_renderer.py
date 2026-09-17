@@ -195,7 +195,9 @@ def test_html_renderer_produces_stable_self_contained_document() -> None:
     assert "break-before: page;" in first
     assert ".publication-section--evidence-summary," in first
     assert ".publication-section--appendix {" in first
-    assert first.count("break-before: page;") == 1
+    assert first.count("break-before: page;") == 2
+    assert ".insight-list > li::marker" in first
+    assert ".publication-section > .section-prose" in first
     assert "counter-reset: publication-reference;" in first
     assert "counter-increment: publication-reference;" in first
     assert "PaperForge v0.12.0" in first
@@ -216,6 +218,30 @@ def test_html_renderer_produces_stable_self_contained_document() -> None:
     assert "linear-gradient" not in first
     assert "box-shadow" not in first
     _assert_html_presentation_contract(first)
+
+
+@pytest.mark.parametrize(
+    ("template_key", "template_name", "signature"),
+    (
+        ("paperforge-classic", "Classic Academic", "#7a263a"),
+        ("modern-research", "Modern Research", "linear-gradient(145deg"),
+        ("ieee-inspired-technical", "IEEE-Inspired Technical", '"Times New Roman"'),
+    ),
+)
+def test_professional_templates_load_distinct_safe_print_assets(
+    template_key: str,
+    template_name: str,
+    signature: str,
+) -> None:
+    presentation = ReportComposer().compose(_enhanced_report()).model_copy(
+        update={"template_key": template_key}
+    )
+    html = HTMLRenderer().render_presentation(presentation)
+
+    assert '<style id="paperforge-template-styles">' in html
+    assert f'template-{template_key}' in html
+    assert f'data-template-name="{template_name}"' in html
+    assert signature in html
 
 
 def test_html_renderer_renders_required_content_in_layout_order() -> None:

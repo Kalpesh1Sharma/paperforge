@@ -163,6 +163,7 @@ class PipelineService:
             presentation = composer.compose(
                 intelligent_report,
                 source_document=source_document,
+                source_chunks=chunks,
                 generated_on=datetime.now(timezone.utc).date(),
             )
         except DocumentParsingError as exc:

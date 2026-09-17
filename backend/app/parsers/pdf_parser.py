@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pymupdf
 
-from app.models.parsed_document import ParsedDocument
+from app.models.parsed_document import ParsedDocument, ParsedPageSpan
 from app.parsers.base import BaseParser, PDFParsingError
 
 
@@ -26,10 +26,20 @@ class PDFParser(BaseParser):
                             f"'{path.name}'."
                         )
 
+                    page_spans: list[ParsedPageSpan] = []
                     for page_index, page in enumerate(document):
                         if page_index:
                             text_buffer.write("\n")
-                        text_buffer.write(page.get_text("text"))
+                        start_char = text_buffer.tell()
+                        page_text = page.get_text("text")
+                        text_buffer.write(page_text)
+                        page_spans.append(
+                            ParsedPageSpan(
+                                page_number=page_index + 1,
+                                start_char=start_char,
+                                end_char=start_char + len(page_text),
+                            )
+                        )
 
                     metadata = {
                         key: str(value)
@@ -45,9 +55,10 @@ class PDFParser(BaseParser):
         except (OSError, RuntimeError, ValueError) as exc:
             raise PDFParsingError(f"Unable to parse PDF: '{path.name}'.") from exc
 
-        return self._build_document(
+        parsed = self._build_document(
             file_path=path,
             extracted_text=extracted_text,
             page_count=page_count,
             metadata=metadata,
         )
+        return parsed.model_copy(update={"pages": tuple(page_spans)})

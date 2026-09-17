@@ -15,11 +15,24 @@ from app.reports.enhanced_models import (
     SynthesisMetadata,
 )
 from app.reports.document_synthesizer import DocumentSynthesizer
+from app.reports.docx_renderer import EditableDocxRenderer
 from app.reports.deterministic_document_synthesizer import (
     DeterministicDocumentSynthesizer,
 )
 from app.reports.html_renderer import HTMLRenderer
-from app.reports.generation_settings import ReportGenerationSettings, VisualTemplate
+from app.reports.generation_settings import (
+    CitationConfiguration,
+    CitationStyle,
+    ContentTone,
+    OutlineApprovalConfiguration,
+    PublicationMetadata,
+    ReportContentConfiguration,
+    ReportGenerationSettings,
+    ReportSectionConfiguration,
+    ReportStructureConfiguration,
+    VisualTemplate,
+    VisualThemeConfiguration,
+)
 from app.reports.intelligence import (
     ConsolidatedDefinition,
     ConsolidatedReference,
@@ -33,7 +46,9 @@ from app.reports.intelligence import (
 from app.reports.pdf_renderer import PDFRenderer
 from app.reports.models import Finding, ReportSection, ResearchReport, TimelineEvent
 from app.reports.presentation_models import (
+    PRESENTATION_SECTION_SPECS,
     AppendixGroup,
+    BibliographyEntry,
     CompressionStatistic,
     ConceptCard,
     DocumentMetadata,
@@ -48,7 +63,9 @@ from app.reports.presentation_models import (
     PresentationEvidence,
     PresentationModel,
     PresentationSection,
+    QualityIssue,
     ReferenceCard,
+    ReportQuality,
     ReportMode,
     TableOfContents,
     TableOfContentsEntry,
@@ -60,11 +77,17 @@ from app.reports.synthesizer import ResearchSynthesizer
 __all__ = [
     "EnhancedResearchReport",
     "DocumentSynthesizer",
+    "EditableDocxRenderer",
     "DeterministicDocumentSynthesizer",
     "ConsolidatedDefinition",
     "ConsolidatedReference",
     "CompressionStatistic",
+    "BibliographyEntry",
+    "CitationConfiguration",
+    "CitationStyle",
     "ConceptCard",
+    "ContentTone",
+    "OutlineApprovalConfiguration",
     "DocumentMetadata",
     "EnrichedFinding",
     "EntityGroup",
@@ -83,6 +106,7 @@ __all__ = [
     "MetricCard",
     "NormalizedEntity",
     "PDFRenderer",
+    "PRESENTATION_SECTION_SPECS",
     "ReportError",
     "ReportComposer",
     "ReportCompositionError",
@@ -100,11 +124,18 @@ __all__ = [
     "PresentationBudget",
     "PresentationModel",
     "PresentationSection",
+    "QualityIssue",
+    "PublicationMetadata",
     "ReferenceCard",
+    "ReportQuality",
+    "ReportContentConfiguration",
+    "ReportSectionConfiguration",
+    "ReportStructureConfiguration",
     "ReportMode",
     "TableOfContents",
     "TableOfContentsEntry",
     "TimelineCard",
     "TimelineEvent",
     "VisualTemplate",
+    "VisualThemeConfiguration",
 ]

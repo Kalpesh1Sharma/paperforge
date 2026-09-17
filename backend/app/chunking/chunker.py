@@ -51,6 +51,18 @@ class DocumentChunker:
                 CHUNK_ID_NAMESPACE,
                 f"{fingerprint}\x1f{span.start_char}\x1f{span.end_char}",
             )
+            page_numbers = tuple(
+                page.page_number
+                for page in document.pages
+                if page.end_char > span.start_char and page.start_char < span.end_char
+            )
+            chunk_metadata: dict[str, object] = {
+                "source_file_type": document.file_type,
+                "source_metadata": dict(document.metadata),
+            }
+            if page_numbers:
+                chunk_metadata["page_number"] = page_numbers[0]
+                chunk_metadata["page_end_number"] = page_numbers[-1]
             chunks.append(
                 DocumentChunk(
                     chunk_id=chunk_id,
@@ -61,10 +73,7 @@ class DocumentChunker:
                     end_char=span.end_char,
                     word_count=word_count,
                     character_count=len(text),
-                    metadata={
-                        "source_file_type": document.file_type,
-                        "source_metadata": dict(document.metadata),
-                    },
+                    metadata=chunk_metadata,
                 )
             )
 
